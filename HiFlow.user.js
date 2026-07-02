@@ -5,6 +5,7 @@
 // @description  在BOSS直聘岗位列表页读取岗位JD，按个人配置计算匹配度，高分岗位辅助打招呼。不绕过验证码、不自动批量发送。
 // @match        https://www.zhipin.com/web/geek/jobs*
 // @match        https://www.zhipin.com/web/geek/job*
+// @match        https://www.zhipin.com/web/geek/chat*
 // @grant        GM_addStyle
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -17,6 +18,11 @@
   const ACTIVE_KEY = 'boss_match_active_profile_v1';
   const SCAN_BATCH_LIMIT = 15;
   const SCANNED_JOB_KEY = 'boss_scanned_job_ids_v1';
+  const QUEUE_KEY = 'boss_apply_queue_v2';
+  const FIRST_TEXT = '您好，我对这份工作非常感兴趣，希望可以有机会与您进一步沟通';
+  const SECOND_TEXT = '您好，我是蔡金伟，6年测试开发经验，经历过美团/字节/快手高频迭代业务质量保障。擅长自动化、性能压测、CI/CD和AI测试提效，能从业务测试推进到质量平台建设。若岗位需要复合型测试开发人才，期待进一步沟通';
+  const isJobsPage = location.href.includes('/web/geek/jobs') || location.href.includes('/web/geek/job');
+  const isChatPage = location.href.includes('/web/geek/chat');
 
   const defaultProfile = {
     name: 'AI测试/测试开发',
@@ -49,6 +55,96 @@
     GM_setValue(STORE_KEY, JSON.stringify(profiles));
   }
 
+
+
+
+  function getQueue() {
+    try {
+      const parsed = JSON.parse(GM_getValue(QUEUE_KEY, '[]'));
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function saveQueue(queue) {
+    GM_setValue(QUEUE_KEY, JSON.stringify(queue));
+  }
+
+  function makeJobId(job) {
+    return [
+      job.company || '',
+      job.title || '',
+      job.salary || '',
+      job.location || ''
+    ].join('|');
+  }
+
+  function addJobToQueue(job) {
+    const queue = getQueue();
+    const id = makeJobId(job);
+
+    if (queue.some(item => item.id === id)) return false;
+
+    queue.push({
+      id,
+      title: job.title || '',
+      company: job.company || '',
+      salary: job.salary || '',
+      location: job.location || '',
+      score: job.score || 0,
+      matchedKeywords: job.matchedKeywords || [],
+      status: 'pending_first',
+      firstText: job.firstText || FIRST_TEXT,
+      secondText: job.secondText || SECOND_TEXT,
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    });
+
+    saveQueue(queue);
+    return true;
+  }
+
+  function updateQueueStatus(id, status, extra = {}) {
+    const next = getQueue().map(item => {
+      if (item.id !== id) return item;
+      return {
+        ...item,
+        ...extra,
+        status,
+        updatedAt: Date.now()
+      };
+    });
+
+    saveQueue(next);
+  }
+
+  function getPendingFirstJobs() {
+    return getQueue().filter(item => item.status === 'pending_first');
+  }
+
+  function getPendingSecondJobs() {
+    return getQueue().filter(item => item.status === 'pending_second');
+  }
+
+  function renderQueueSummary() {
+    const queue = getQueue();
+    const counts = queue.reduce((acc, item) => {
+      acc[item.status] = (acc[item.status] || 0) + 1;
+      return acc;
+    }, {});
+
+    return `队列共 ${queue.length} 个：待第一条 ${counts.pending_first || 0}，待第二条 ${counts.pending_second || 0}，已完成 ${counts.done || 0}，失败/跳过 ${(counts.first_failed || 0) + (counts.skipped || 0) + (counts.skipped_second || 0)}`;
+  }
+
+  function showQueue() {
+    const queue = getQueue();
+    const lines = queue.slice(0, 30).map((item, index) => {
+      return `${index + 1}. [${item.status}] ${item.company} ${item.title} ${item.score}分`;
+    });
+
+    alert(`${renderQueueSummary()}\n\n${lines.join('\n') || '暂无队列数据'}`);
+  }
 
   function getScannedJobIds() {
     try {
@@ -458,6 +554,166 @@ function getJobDetailText() {
     return null;
   }
 
+
+  function findButtonByText(textList) {
+    return findClickableByText(textList);
+  }
+
+  function findChatInput() {
+    const selectors = [
+      'textarea',
+      '[contenteditable="true"]',
+      '.chat-input textarea',
+      '.input-area textarea',
+      '[class*="input"] textarea',
+      '[class*="editor"]'
+    ];
+
+    for (const selector of selectors) {
+      const el = document.querySelector(selector);
+      if (el && isVisible(el)) return el;
+    }
+
+    return null;
+  }
+
+  function fillInput(input, text) {
+    input.focus();
+
+    if ('value' in input) {
+      input.value = text;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    } else {
+      input.innerText = text;
+      input.dispatchEvent(new InputEvent('input', {
+        bubbles: true,
+        inputType: 'insertText',
+        data: text
+      }));
+    }
+  }
+
+  async function sendFirstGreetingForCurrentJob(job) {
+    const communicateBtn = findButtonByText(['立即沟通', '继续沟通', '打招呼', '感兴趣']);
+
+    if (!communicateBtn) {
+      alert('没有找到立即沟通按钮，可能页面结构变化，或该岗位暂时不能沟通。');
+      return false;
+    }
+
+    communicateBtn.click();
+    await sleep(1000);
+
+    const input = findChatInput();
+    if (!input) {
+      alert('已点击沟通按钮，但没有识别到输入框。请确认第一条是否已发送。');
+      return false;
+    }
+
+    fillInput(input, job.firstText || FIRST_TEXT);
+    await sleep(500);
+
+    const sendBtn = findButtonByText(['发送']);
+    if (!sendBtn) {
+      alert('已填入第一条消息，但没有找到发送按钮，请手动发送。');
+      return false;
+    }
+
+    sendBtn.click();
+    return true;
+  }
+
+  function addHighScoreJobsToQueue(scoredJobs = window.__bossScoredJobs || [], threshold = Number(getActiveProfile().threshold || 83)) {
+    let added = 0;
+
+    scoredJobs.forEach(job => {
+      if (job.score >= threshold && (!job.hitExcludes || job.hitExcludes.length === 0)) {
+        if (addJobToQueue(job)) added++;
+      }
+    });
+
+    const status = document.querySelector('#bh-status');
+    if (status) status.textContent = `${renderQueueSummary()}，本次新增 ${added} 个`;
+    alert(`已加入 ${added} 个高分岗位到投递队列。`);
+  }
+
+  async function processFirstGreetingQueue() {
+    const job = getPendingFirstJobs()[0];
+
+    if (!job) {
+      alert('没有待发送第一条的岗位。');
+      return;
+    }
+
+    const confirmed = confirm(`准备发送第一条：\n\n${job.company}\n${job.title}\n匹配分：${job.score}\n\n请确认当前页面右侧/弹窗就是这个岗位，再继续。`);
+    if (!confirmed) return;
+
+    const ok = await sendFirstGreetingForCurrentJob(job);
+    updateQueueStatus(job.id, ok ? 'pending_second' : 'first_failed', ok ? { firstSentAt: Date.now() } : {});
+
+    const status = document.querySelector('#bh-status');
+    if (status) status.textContent = renderQueueSummary();
+    alert(ok ? '第一条已发送。接下来进入聊天页发送第二条。' : '第一条发送失败，已标记为 first_failed。');
+  }
+
+  async function sendSecondMessageForCurrentChat() {
+    const queue = getPendingSecondJobs();
+
+    if (!queue.length) {
+      alert('没有待发送第二条的岗位。');
+      return;
+    }
+
+    const job = queue[0];
+    const confirmed = confirm(`准备在当前聊天窗口发送第二条：\n\n${job.company}\n${job.title}\n匹配分：${job.score}\n\n请确认当前聊天窗口就是这个HR，再继续。`);
+    if (!confirmed) return;
+
+    const input = findChatInput();
+    if (!input) {
+      alert('没有找到聊天输入框。请先打开一个HR聊天窗口。');
+      return;
+    }
+
+    fillInput(input, job.secondText || SECOND_TEXT);
+    await sleep(500);
+
+    const sendBtn = findButtonByText(['发送']);
+    if (!sendBtn) {
+      alert('已填入第二条消息，但没有找到发送按钮，请手动发送。');
+      return;
+    }
+
+    sendBtn.click();
+    updateQueueStatus(job.id, 'done', { secondSentAt: Date.now() });
+
+    const status = document.querySelector('#bh-status');
+    if (status) status.textContent = renderQueueSummary();
+    alert('第二条已发送，并已标记为完成。');
+  }
+
+  function skipNextSecondJob() {
+    const job = getPendingSecondJobs()[0];
+    if (!job) {
+      alert('没有待发送第二条的岗位。');
+      return;
+    }
+
+    updateQueueStatus(job.id, 'skipped_second');
+    alert('已跳过当前待跟进岗位。');
+  }
+
+  function markNextSecondJobDone() {
+    const job = getPendingSecondJobs()[0];
+    if (!job) {
+      alert('没有待发送第二条的岗位。');
+      return;
+    }
+
+    updateQueueStatus(job.id, 'done', { secondSentAt: Date.now(), manuallyDone: true });
+    alert('已标记当前待跟进岗位为完成。');
+  }
+
   async function fillGreetingText(text) {
     await sleep(800);
 
@@ -731,23 +987,51 @@ function getJobDetailText() {
       .toLowerCase();
   }
 
+  function isTextIncluded(a, b) {
+    return Boolean(a && b && (a.includes(b) || b.includes(a)));
+  }
+
+  function isSectionOnlyDetailSnapshot(snapshot = {}) {
+    const text = snapshot.text || '';
+
+    return Boolean(
+      text.length >= 150 &&
+      /职位描述|岗位职责|岗位要求|工作地址|任职要求|加分项/.test(text) &&
+      !snapshot.title &&
+      !snapshot.company
+    );
+  }
+
   function isRightDetailMatchedWithCard(snapshot = {}, cardMeta = {}) {
     const rightText = simpleText(snapshot.text || '');
     const rightTitle = simpleText(snapshot.title || '');
     const rightCompany = simpleText(snapshot.company || '');
+    const rightSalary = simpleText(snapshot.salary || '');
+    const rightLocation = simpleText(snapshot.location || '');
 
     const cardTitle = simpleText(cardMeta.title || '');
     const cardCompany = simpleText(cardMeta.company || '');
+    const cardSalary = simpleText(cardMeta.salary || '');
+    const cardLocation = simpleText(cardMeta.location || '');
 
     if (!rightText || !cardTitle) return false;
 
-    if (cardTitle && rightText.includes(cardTitle)) return true;
-    if (cardTitle.length >= 5 && rightText.includes(cardTitle.slice(0, 5))) return true;
-    if (cardTitle.length >= 4 && rightTitle.includes(cardTitle.slice(0, 4))) return true;
-    if (cardCompany && rightText.includes(cardCompany)) return true;
-    if (cardCompany && rightCompany && rightCompany.includes(cardCompany)) return true;
+    const titleMatched = rightText.includes(cardTitle) || isTextIncluded(rightTitle, cardTitle);
+    if (!titleMatched) {
+      return isSectionOnlyDetailSnapshot(snapshot);
+    }
 
-    return false;
+    const supportingFields = [
+      { card: cardCompany, detail: rightCompany },
+      { card: cardSalary, detail: rightSalary },
+      { card: cardLocation, detail: rightLocation }
+    ].filter(field => field.card);
+
+    if (!supportingFields.length) return true;
+
+    return supportingFields.every(field => {
+      return rightText.includes(field.card) || isTextIncluded(field.detail, field.card);
+    });
   }
 
   async function waitRightDetailReadyForCard(cardMeta, timeout = 7000) {
@@ -772,20 +1056,6 @@ function getJobDetailText() {
     return { ok: false, snapshot: lastSnapshot || getCurrentJobSnapshot() };
   }
 
-  function addJobToQueueIfAvailable(scoredJob, profile) {
-    window.__bossQueuedJobs = window.__bossQueuedJobs || [];
-
-    if (!window.__bossQueuedJobs.some(job => job.id === scoredJob.id)) {
-      window.__bossQueuedJobs.push({
-        ...scoredJob,
-        greetText: buildGreeting(profile, {
-          score: scoredJob.score,
-          matchedKeywords: scoredJob.matchedKeywords || []
-        })
-      });
-    }
-  }
-
   async function scanVisibleCards() {
     if (scanning) return;
 
@@ -798,7 +1068,7 @@ function getJobDetailText() {
 
     let scannedCount = 0;
     let skippedCount = 0;
-    let addedCount = 0;
+    let highScoreCount = 0;
 
     if (!cards.length) {
       alert('没有识别到当前可见岗位卡片。请确认左侧岗位列表已经加载。');
@@ -909,8 +1179,7 @@ function getJobDetailText() {
         result.score >= Number(profile.threshold || 83) &&
         (!result.hitExcludes || result.hitExcludes.length === 0)
       ) {
-        addJobToQueueIfAvailable(scoredJob, profile);
-        addedCount++;
+        highScoreCount++;
       }
 
       await sleep(1200 + Math.floor(Math.random() * 800));
@@ -918,7 +1187,7 @@ function getJobDetailText() {
 
     if (status) {
       status.textContent = scanning
-        ? `当前批次完成：新扫 ${scannedCount} 个，跳过重复 ${skippedCount} 个，加入队列 ${addedCount} 个`
+        ? `当前批次完成：新扫 ${scannedCount} 个，跳过重复 ${skippedCount} 个，高分候选 ${highScoreCount} 个；可点击“加入高分岗位队列”沉淀结果`
         : '已停止';
     }
 
@@ -1026,6 +1295,45 @@ function getJobDetailText() {
 
     const panel = document.createElement('div');
     panel.id = 'boss-helper-panel';
+
+    if (isChatPage && !isJobsPage) {
+      panel.innerHTML = `
+        <div class="bh-head">
+          <b>BOSS投递队列</b>
+          <button id="bh-toggle">收起</button>
+        </div>
+
+        <div id="bh-body">
+          <div class="bh-row">
+            <button id="bh-show-queue">查看待发第二条</button>
+            <button id="bh-send-second">发送当前会话第二条</button>
+          </div>
+          <div class="bh-row">
+            <button id="bh-skip-second">跳过当前队列</button>
+            <button id="bh-done-second">标记当前已完成</button>
+          </div>
+          <div id="bh-status">${escapeHtml(renderQueueSummary())}</div>
+          <div id="boss-helper-result">
+            <div class="bh-empty">打开对应 HR 会话后，点击“发送当前会话第二条”。</div>
+          </div>
+        </div>
+      `;
+
+      document.body.appendChild(panel);
+      document.querySelector('#bh-show-queue').addEventListener('click', showQueue);
+      document.querySelector('#bh-send-second').addEventListener('click', sendSecondMessageForCurrentChat);
+      document.querySelector('#bh-skip-second').addEventListener('click', skipNextSecondJob);
+      document.querySelector('#bh-done-second').addEventListener('click', markNextSecondJobDone);
+      document.querySelector('#bh-toggle').addEventListener('click', () => {
+        const body = document.querySelector('#bh-body');
+        const btn = document.querySelector('#bh-toggle');
+        const hidden = body.style.display === 'none';
+        body.style.display = hidden ? 'block' : 'none';
+        btn.textContent = hidden ? '收起' : '展开';
+      });
+      return;
+    }
+
     panel.innerHTML = `
       <div class="bh-head">
         <b>BOSS匹配助手</b>
@@ -1070,6 +1378,16 @@ function getJobDetailText() {
         </div>
 
         <div class="bh-row">
+          <button id="bh-add-high">加入高分岗位队列</button>
+          <button id="bh-show-queue">查看投递队列</button>
+        </div>
+
+        <div class="bh-row">
+          <button id="bh-send-first">发送当前岗位第一条</button>
+          <button id="bh-open-chat">打开聊天页</button>
+        </div>
+
+        <div class="bh-row">
           <button id="bh-clear-scan">清空扫描记录</button>
         </div>
 
@@ -1098,6 +1416,10 @@ function getJobDetailText() {
     document.querySelector('#bh-greet-btn').addEventListener('click', greetCurrentJob);
     document.querySelector('#bh-scan').addEventListener('click', scanVisibleCards);
     document.querySelector('#bh-stop').addEventListener('click', stopScan);
+    document.querySelector('#bh-add-high').addEventListener('click', () => addHighScoreJobsToQueue());
+    document.querySelector('#bh-show-queue').addEventListener('click', showQueue);
+    document.querySelector('#bh-send-first').addEventListener('click', processFirstGreetingQueue);
+    document.querySelector('#bh-open-chat').addEventListener('click', () => window.open('https://www.zhipin.com/web/geek/chat?ka=header-message', '_blank'));
     document.querySelector('#bh-clear-scan').addEventListener('click', clearScannedJobIds);
 
     document.querySelector('#bh-toggle').addEventListener('click', () => {
@@ -1244,10 +1566,13 @@ function getJobDetailText() {
   `);
 
   createPanel();
-  bindJobCardClickAutoAnalyze();
 
-  setTimeout(() => {
-    analyzeCurrentJob('init');
-  }, 1500);
+  if (isJobsPage) {
+    bindJobCardClickAutoAnalyze();
+
+    setTimeout(() => {
+      analyzeCurrentJob('init');
+    }, 1500);
+  }
 
 })();
