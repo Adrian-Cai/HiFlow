@@ -15,6 +15,8 @@
 
   const STORE_KEY = 'boss_match_profiles_v1';
   const ACTIVE_KEY = 'boss_match_active_profile_v1';
+  const SCAN_BATCH_LIMIT = 15;
+  const SCANNED_JOB_KEY = 'boss_scanned_job_ids_v1';
 
   const defaultProfile = {
     name: 'AI测试/测试开发',
@@ -47,6 +49,28 @@
     GM_setValue(STORE_KEY, JSON.stringify(profiles));
   }
 
+
+  function getScannedJobIds() {
+    try {
+      const raw = GM_getValue(SCANNED_JOB_KEY, '[]');
+      const parsed = JSON.parse(raw);
+      return new Set(Array.isArray(parsed) ? parsed : []);
+    } catch (e) {
+      return new Set();
+    }
+  }
+
+  function saveScannedJobIds(set) {
+    GM_setValue(SCANNED_JOB_KEY, JSON.stringify(Array.from(set)));
+  }
+
+  function clearScannedJobIds() {
+    GM_setValue(SCANNED_JOB_KEY, '[]');
+    const status = document.querySelector('#bh-status');
+    if (status) status.textContent = '已清空扫描记录';
+    alert('已清空扫描记录。');
+  }
+
   function getActiveProfile() {
     const profiles = getProfiles();
     const activeName = GM_getValue(ACTIVE_KEY, profiles[0].name);
@@ -77,6 +101,40 @@
     const rect = el.getBoundingClientRect();
     const style = window.getComputedStyle(el);
     return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+  }
+
+
+  function extractJobCardMeta(card) {
+    const lines = (card?.innerText || '')
+      .split('\n')
+      .map(x => x.trim())
+      .filter(Boolean);
+
+    const title = lines[0] || '';
+    const salary = lines.find(x => /\d+\s*-\s*\d+\s*[Kk]|\d+\s*[Kk]/.test(x)) || '';
+    const location = lines.find(x => /上海|北京|深圳|广州|杭州|成都|武汉|南京|苏州|重庆|西安/.test(x)) || '';
+    const company = lines.find(x => x !== title && x !== salary && x !== location && !/经验|学历|本科|大专|硕士/.test(x)) || '';
+    const link =
+      card?.querySelector('a[href*="/job_detail/"]')?.href ||
+      card?.closest('a[href*="/job_detail/"]')?.href ||
+      '';
+
+    return { title, company, salary, location, link };
+  }
+
+  function getJobStableId(cardMeta) {
+    if (cardMeta.link) {
+      const match = cardMeta.link.match(/job_detail\/([^?/.]+)/);
+      if (match) return match[1];
+      return cardMeta.link;
+    }
+
+    return [
+      cardMeta.company || '',
+      cardMeta.title || '',
+      cardMeta.salary || '',
+      cardMeta.location || ''
+    ].join('|');
   }
 
   function getJobCards() {
@@ -554,42 +612,212 @@ function getJobDetailText() {
     card.appendChild(badge);
   }
 
+
+  function getCurrentVisibleJobCards(limit = SCAN_BATCH_LIMIT) {
+    const cards = getJobCards();
+
+    const visibleCards = cards.filter(card => {
+      if (!isVisible(card)) return false;
+
+      const rect = card.getBoundingClientRect();
+      const inViewport =
+        rect.bottom > 80 &&
+        rect.top < window.innerHeight - 60 &&
+        rect.left < window.innerWidth * 0.45;
+
+      return inViewport;
+    });
+
+    return visibleCards.slice(0, limit);
+  }
+
+  function detailMatchesCard(snapshot, cardMeta) {
+    const detail = normalizeText([
+      snapshot.title,
+      snapshot.company,
+      snapshot.salary,
+      snapshot.location,
+      snapshot.text
+    ].filter(Boolean).join(' '));
+
+    const title = normalizeText(cardMeta.title);
+    const company = normalizeText(cardMeta.company);
+
+    if (title && detail.includes(title)) return true;
+    if (company && detail.includes(company) && (!title || detail.includes(title.slice(0, 8)))) return true;
+    return Boolean(snapshot.text && snapshot.text.length >= 80);
+  }
+
+  async function waitRightDetailReadyForCard(cardMeta, timeout = 7000) {
+    const start = Date.now();
+    let latest = getCurrentJobSnapshot();
+
+    while (Date.now() - start < timeout) {
+      latest = getCurrentJobSnapshot();
+
+      if (detailMatchesCard(latest, cardMeta)) {
+        return { ok: true, snapshot: latest };
+      }
+
+      await sleep(250);
+    }
+
+    return { ok: false, snapshot: latest };
+  }
+
+  function addJobToQueueIfAvailable(scoredJob, profile) {
+    window.__bossQueuedJobs = window.__bossQueuedJobs || [];
+
+    if (!window.__bossQueuedJobs.some(job => job.id === scoredJob.id)) {
+      window.__bossQueuedJobs.push({
+        ...scoredJob,
+        greetText: buildGreeting(profile, {
+          score: scoredJob.score,
+          matchedKeywords: scoredJob.matchedKeywords || []
+        })
+      });
+    }
+  }
+
   async function scanVisibleCards() {
     if (scanning) return;
 
     scanning = true;
+
     const profile = getActiveProfile();
-    const cards = getJobCards();
+    const cards = getCurrentVisibleJobCards(SCAN_BATCH_LIMIT);
+    const scannedIds = getScannedJobIds();
     const status = document.querySelector('#bh-status');
 
+    let scannedCount = 0;
+    let skippedCount = 0;
+    let addedCount = 0;
+
     if (!cards.length) {
-      alert('没有识别到左侧岗位卡片。页面可能未加载完成，或BOSS页面结构已变化。');
+      alert('没有识别到当前可见岗位卡片。请确认左侧岗位列表已经加载。');
       scanning = false;
       return;
+    }
+
+    window.__bossScoredJobs = window.__bossScoredJobs || [];
+
+    if (status) {
+      status.textContent = `本次最多扫描 ${SCAN_BATCH_LIMIT} 个当前可见岗位`;
     }
 
     for (let i = 0; i < cards.length; i++) {
       if (!scanning) break;
 
       const card = cards[i];
-      status.textContent = `扫描中：${i + 1}/${cards.length}`;
+      const cardMeta = extractJobCardMeta(card);
+      const stableId = getJobStableId(cardMeta);
 
-      card.scrollIntoView({ block: 'center', behavior: 'smooth' });
-      await sleep(500);
+      if (scannedIds.has(stableId)) {
+        skippedCount++;
 
-      card.click();
-      await sleep(1200 + Math.floor(Math.random() * 800));
+        markCard(card, {
+          score: 0,
+          recommendation: '已扫过'
+        });
 
-      const jobText = getJobDetailText();
-      const result = calcMatch(profile, jobText);
-      markCard(card, result);
-
-      if (i === 0 || result.recommendation === '推荐沟通') {
-        updateResultBox(result);
+        continue;
       }
+
+      if (status) {
+        status.textContent = `扫描当前批次：${i + 1}/${cards.length}，岗位：${cardMeta.title || '未识别'}`;
+      }
+
+      const box = document.querySelector('#boss-helper-result');
+      if (box) {
+        box.innerHTML = `
+          <div style="font-weight:700;">正在扫描当前批次 ${i + 1}/${cards.length}</div>
+          <div><b>左侧卡片：</b>${escapeHtml(cardMeta.title || '未识别')}</div>
+          <div><b>公司：</b>${escapeHtml(cardMeta.company || '未识别')}</div>
+          <div><b>薪资/地点：</b>${escapeHtml([cardMeta.salary, cardMeta.location].filter(Boolean).join(' / ') || '未识别')}</div>
+          <div style="margin-top:6px;color:#666;">等待右侧岗位详情同步...</div>
+        `;
+      }
+
+      card.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+      await sleep(300);
+      card.click();
+
+      const waitResult = await waitRightDetailReadyForCard(cardMeta, 7000);
+      const snapshot = waitResult.snapshot;
+
+      if (!waitResult.ok) {
+        console.warn('右侧详情未同步当前卡片，跳过：', cardMeta, snapshot);
+
+        markCard(card, {
+          score: 0,
+          recommendation: '未同步'
+        });
+
+        scannedIds.add(stableId);
+        saveScannedJobIds(scannedIds);
+
+        continue;
+      }
+
+      const jobText = snapshot.text;
+
+      if (!jobText || jobText.length < 80) {
+        markCard(card, {
+          score: 0,
+          recommendation: '无详情'
+        });
+
+        scannedIds.add(stableId);
+        saveScannedJobIds(scannedIds);
+
+        continue;
+      }
+
+      const result = calcMatch(profile, jobText);
+
+      const scoredJob = {
+        id: stableId,
+        title: snapshot.title || cardMeta.title || '',
+        company: snapshot.company || cardMeta.company || '',
+        salary: snapshot.salary || cardMeta.salary || '',
+        location: snapshot.location || cardMeta.location || '',
+        score: result.score,
+        recommendation: result.recommendation,
+        matchedKeywords: result.matchedKeywords || [],
+        missingKeywords: result.missingKeywords || [],
+        hitExcludes: result.hitExcludes || [],
+        cardMeta,
+        snapshot
+      };
+
+      window.__bossScoredJobs.push(scoredJob);
+
+      markCard(card, result);
+      updateResultBox(result, snapshot);
+
+      scannedIds.add(stableId);
+      saveScannedJobIds(scannedIds);
+
+      scannedCount++;
+
+      if (
+        result.recommendation === '推荐沟通' &&
+        result.score >= Number(profile.threshold || 83) &&
+        (!result.hitExcludes || result.hitExcludes.length === 0)
+      ) {
+        addJobToQueueIfAvailable(scoredJob, profile);
+        addedCount++;
+      }
+
+      await sleep(1200 + Math.floor(Math.random() * 800));
     }
 
-    status.textContent = scanning ? '扫描完成' : '已停止';
+    if (status) {
+      status.textContent = scanning
+        ? `当前批次完成：新扫 ${scannedCount} 个，跳过重复 ${skippedCount} 个，加入队列 ${addedCount} 个`
+        : '已停止';
+    }
+
     scanning = false;
   }
 
@@ -716,8 +944,12 @@ function getJobDetailText() {
         </div>
 
         <div class="bh-row">
-          <button id="bh-scan">扫描左侧卡片</button>
+          <button id="bh-scan">扫描当前批次</button>
           <button id="bh-stop">停止</button>
+        </div>
+
+        <div class="bh-row">
+          <button id="bh-clear-scan">清空扫描记录</button>
         </div>
 
         <div id="bh-status">待操作</div>
@@ -745,6 +977,7 @@ function getJobDetailText() {
     document.querySelector('#bh-greet-btn').addEventListener('click', greetCurrentJob);
     document.querySelector('#bh-scan').addEventListener('click', scanVisibleCards);
     document.querySelector('#bh-stop').addEventListener('click', stopScan);
+    document.querySelector('#bh-clear-scan').addEventListener('click', clearScannedJobIds);
 
     document.querySelector('#bh-toggle').addEventListener('click', () => {
       const body = document.querySelector('#bh-body');
