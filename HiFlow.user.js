@@ -528,9 +528,9 @@ function getJobDetailText() {
     }
   }
 
-  function analyzeCurrentJob(source = 'manual') {
+  function analyzeCurrentJob(source = 'manual', cardMeta = {}, snapshotOverride = null) {
     const profile = getActiveProfile();
-    const snapshot = getCurrentJobSnapshot();
+    const snapshot = snapshotOverride || getCurrentJobSnapshot();
     const jobText = snapshot.text;
 
     if (!jobText || jobText.length < 80) {
@@ -547,7 +547,7 @@ function getJobDetailText() {
     const result = calcMatch(profile, jobText);
     lastResult = result;
 
-    updateResultBox(result, snapshot);
+    updateResultBox(result, snapshot, cardMeta);
 
     const status = document.querySelector('#bh-status');
     if (status) {
@@ -984,21 +984,38 @@ function getJobDetailText() {
 
       if (typeof scanning !== 'undefined' && scanning) return;
 
-      const beforeFingerprint = getCurrentDetailFingerprint();
+      const cardMeta = extractJobCardMeta(card);
       const currentSeq = ++bossAutoAnalyzeSeq;
 
       const status = document.querySelector('#bh-status');
       if (status) {
-        status.textContent = '检测到岗位卡片点击，等待右侧详情刷新...';
+        status.textContent = `检测到岗位卡片点击，等待右侧详情刷新：${cardMeta.title || '未识别岗位'}`;
       }
 
       setTimeout(async () => {
-        await waitForDetailChange(beforeFingerprint, 5000);
-        await sleep(300);
+        const waitResult = await waitRightDetailReadyForCard(cardMeta, 6000);
 
         if (currentSeq !== bossAutoAnalyzeSeq) return;
 
-        analyzeCurrentJob('card-click');
+        if (!waitResult.ok) {
+          if (status) {
+            status.textContent = '右侧详情未同步当前点击岗位，请稍后重试';
+          }
+
+          const box = document.querySelector('#boss-helper-result');
+          if (box) {
+            box.innerHTML = `
+              <div style="color:#b54708;font-weight:700;">右侧详情可能未同步</div>
+              <div><b>左侧卡片：</b>${escapeHtml(cardMeta.title || '未识别')}</div>
+              <div><b>公司：</b>${escapeHtml(cardMeta.company || '未识别')}</div>
+              <div>已避免使用上一条岗位详情重新评分，请等待页面加载完成后再试。</div>
+            `;
+          }
+
+          return;
+        }
+
+        analyzeCurrentJob('card-click', cardMeta, waitResult.snapshot);
       }, 0);
 
     }, true);
