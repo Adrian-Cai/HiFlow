@@ -8,6 +8,9 @@
 // @grant        GM_addStyle
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_xmlhttpRequest
+// @connect      127.0.0.1
+// @connect      localhost
 // ==/UserScript==
 
 (function () {
@@ -24,7 +27,10 @@
     keywords: '软件测试,测试用例,测试计划,需求分析,缺陷管理,接口测试,自动化测试,UI自动化,Playwright,Selenium,Cypress,Postman,JMeter,k6,pytest,Python,Java,SQL,Linux,Git,Jenkins,CI/CD,Allure,测试平台,代码Diff,质量工程,AI测试,大模型,Prompt',
     excludeKeywords: '销售,电话销售,客服,地推,培训贷,无薪,保险,直播,主播,外包驻场,纯外包,996,单休',
     threshold: 83,
-    greetTemplate: '您好，我对这个岗位比较感兴趣。我的经历与岗位要求中的「{matched}」比较匹配，方便进一步沟通吗？'
+    greetTemplate: '您好，我对这个岗位比较感兴趣。我的经历与岗位要求中的「{matched}」比较匹配，方便进一步沟通吗？',
+    useLocalApi: false,
+    apiUrl: 'http://127.0.0.1:8787/match',
+    resumeId: 'resume_001'
   };
 
   let scanning = false;
@@ -392,6 +398,75 @@ function getJobDetailText() {
     return cardText.split('\n').slice(0, 2).join(' ');
   }
 
+  function mapRemoteMatchResult(data, profile) {
+    const score = Number(data?.score ?? 0);
+    const decision = String(data?.decision || '').toLowerCase();
+    const matchedKeywords = data?.matched_points || data?.matchedKeywords || [];
+    const missingKeywords = data?.missing_points || data?.missingKeywords || [];
+    const hitExcludes = data?.risk_points || data?.hitExcludes || [];
+
+    return {
+      score: Math.max(0, Math.min(100, Math.round(score))),
+      matchedTitle: data?.title ? [data.title] : [],
+      matchedKeywords: Array.isArray(matchedKeywords) ? matchedKeywords : [],
+      missingKeywords: Array.isArray(missingKeywords) ? missingKeywords : [],
+      hitExcludes: Array.isArray(hitExcludes) ? hitExcludes : [],
+      recommendation: decision === 'recommend' || score >= Number(profile.threshold || 83) ? '推荐沟通' : '暂不推荐',
+      detail: {
+        hardScore: data?.hard_score,
+        skillScore: data?.skill_score,
+        experienceScore: data?.experience_score,
+        llmScore: data?.llm_score,
+        source: 'local-api'
+      },
+      raw: data
+    };
+  }
+
+  async function requestLocalMatch(profile, snapshot, cardMeta = {}) {
+    const apiUrl = String(profile.apiUrl || '').trim();
+    if (!apiUrl) throw new Error('未配置本地 match 接口地址');
+
+    const payload = {
+      resume_id: profile.resumeId || 'resume_001',
+      jd_text: snapshot.text || '',
+      source: 'boss',
+      job_meta: {
+        title: snapshot.title || cardMeta.title || '',
+        company: snapshot.company || cardMeta.company || '',
+        salary: snapshot.salary || cardMeta.salary || '',
+        location: snapshot.location || cardMeta.location || '',
+        link: cardMeta.link || location.href
+      }
+    };
+
+    const data = await new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        method: 'POST',
+        url: apiUrl,
+        headers: { 'Content-Type': 'application/json' },
+        data: JSON.stringify(payload),
+        timeout: 15000,
+        onload: response => {
+          if (response.status < 200 || response.status >= 300) {
+            reject(new Error(`本地 match 接口返回 ${response.status}`));
+            return;
+          }
+
+          try {
+            resolve(JSON.parse(response.responseText || '{}'));
+          } catch (error) {
+            reject(new Error(`本地 match 接口返回非 JSON：${error.message}`));
+          }
+        },
+        onerror: () => reject(new Error('本地 match 接口网络错误')),
+        ontimeout: () => reject(new Error('本地 match 接口请求超时'))
+      });
+    });
+
+    return mapRemoteMatchResult(data, profile);
+  }
+
   function calcMatch(profile, jobText) {
     const text = normalizeText(jobText);
     const targetTitles = splitWords(profile.targetTitles);
@@ -494,8 +569,17 @@ function getJobDetailText() {
 
   async function greetCurrentJob() {
     const profile = getActiveProfile();
-    const jobText = getJobDetailText();
-    const result = calcMatch(profile, jobText);
+    const snapshot = getCurrentJobSnapshot();
+    const jobText = snapshot.text;
+    let result = calcMatch(profile, jobText);
+
+    if (profile.useLocalApi) {
+      try {
+        result = await requestLocalMatch(profile, snapshot);
+      } catch (error) {
+        alert(`本地 match 接口调用失败，已回退关键词评分：${error.message}`);
+      }
+    }
     lastResult = result;
 
     updateResultBox(result, getCurrentJobSnapshot());
@@ -528,7 +612,7 @@ function getJobDetailText() {
     }
   }
 
-  function analyzeCurrentJob(source = 'manual', cardMeta = {}, snapshotOverride = null) {
+  async function analyzeCurrentJob(source = 'manual', cardMeta = {}, snapshotOverride = null) {
     const profile = getActiveProfile();
     const snapshot = snapshotOverride || getCurrentJobSnapshot();
     const jobText = snapshot.text;
@@ -544,12 +628,23 @@ function getJobDetailText() {
       return;
     }
 
-    const result = calcMatch(profile, jobText);
+    let result = calcMatch(profile, jobText);
+    const status = document.querySelector('#bh-status');
+
+    if (profile.useLocalApi) {
+      if (status) status.textContent = '正在调用本地 match 接口...';
+      try {
+        result = await requestLocalMatch(profile, snapshot, cardMeta);
+      } catch (error) {
+        console.warn('本地 match 接口调用失败，回退关键词评分：', error);
+        if (status) status.textContent = `本地接口失败，已回退关键词评分：${error.message}`;
+      }
+    }
+
     lastResult = result;
 
     updateResultBox(result, snapshot, cardMeta);
 
-    const status = document.querySelector('#bh-status');
     if (status) {
       status.textContent = source === 'card-click'
         ? '已根据当前点击岗位自动刷新'
@@ -597,10 +692,13 @@ function getJobDetailText() {
 
       <hr style="border:none;border-top:1px solid #eee;margin:8px 0;" />
       <div><b>判断：</b>${escapeHtml(result.recommendation)}</div>
+      ${detail.source ? `<div><b>评分来源：</b>${escapeHtml(detail.source === 'local-api' ? '本地AI匹配服务' : detail.source)}</div>` : ''}
       ${detail.semanticScore !== undefined ? `<div><b>简历-JD相似度：</b>${detail.semanticScore}%</div>` : ''}
       ${detail.skillScore !== undefined ? `<div><b>技能覆盖度：</b>${detail.skillScore}%</div>` : ''}
       ${detail.titleScore !== undefined ? `<div><b>岗位方向：</b>${detail.titleScore}%</div>` : ''}
       ${detail.conditionScore !== undefined ? `<div><b>硬性条件：</b>${detail.conditionScore}%</div>` : ''}
+      ${detail.hardScore !== undefined ? `<div><b>硬性条件：</b>${detail.hardScore}%</div>` : ''}
+      ${detail.llmScore !== undefined ? `<div><b>大模型判断：</b>${detail.llmScore}%</div>` : ''}
       ${detail.experienceScore !== undefined ? `<div><b>年限匹配：</b>${detail.experienceScore}%</div>` : ''}
       <div><b>命中岗位：</b>${escapeHtml(titles)}</div>
       <div><b>匹配能力：</b>${escapeHtml(matched)}</div>
@@ -628,6 +726,9 @@ function getJobDetailText() {
     document.querySelector('#bh-excludes').value = profile.excludeKeywords || '';
     document.querySelector('#bh-threshold').value = profile.threshold || 83;
     document.querySelector('#bh-greet').value = profile.greetTemplate || '';
+    document.querySelector('#bh-use-local-api').checked = Boolean(profile.useLocalApi);
+    document.querySelector('#bh-api-url').value = profile.apiUrl || defaultProfile.apiUrl;
+    document.querySelector('#bh-resume-id').value = profile.resumeId || defaultProfile.resumeId;
   }
 
   function readProfileFromForm() {
@@ -637,7 +738,10 @@ function getJobDetailText() {
       keywords: document.querySelector('#bh-keywords').value.trim(),
       excludeKeywords: document.querySelector('#bh-excludes').value.trim(),
       threshold: Number(document.querySelector('#bh-threshold').value || 83),
-      greetTemplate: document.querySelector('#bh-greet').value.trim()
+      greetTemplate: document.querySelector('#bh-greet').value.trim(),
+      useLocalApi: document.querySelector('#bh-use-local-api').checked,
+      apiUrl: document.querySelector('#bh-api-url').value.trim(),
+      resumeId: document.querySelector('#bh-resume-id').value.trim()
     };
   }
 
@@ -1054,6 +1158,14 @@ function getJobDetailText() {
         <label>打招呼话术，可用 {matched} 和 {score}</label>
         <textarea id="bh-greet" rows="3"></textarea>
 
+        <label class="bh-check"><input id="bh-use-local-api" type="checkbox" /> 使用本地AI匹配服务</label>
+
+        <label>本地 match 接口</label>
+        <input id="bh-api-url" placeholder="http://127.0.0.1:8787/match" />
+
+        <label>简历ID</label>
+        <input id="bh-resume-id" placeholder="resume_001" />
+
         <div class="bh-row">
           <button id="bh-save">保存配置</button>
           <button id="bh-delete">删除配置</button>
@@ -1161,6 +1273,17 @@ function getJobDetailText() {
       outline: none;
       resize: vertical;
       background: #fff;
+    }
+
+    #boss-helper-panel .bh-check {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: #333;
+    }
+
+    #boss-helper-panel .bh-check input {
+      width: auto;
     }
 
     #boss-helper-panel button {
