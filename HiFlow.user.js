@@ -105,21 +105,69 @@
 
 
   function extractJobCardMeta(card) {
-    const lines = (card?.innerText || '')
+    const text = card?.innerText || '';
+    const lines = text
       .split('\n')
       .map(x => x.trim())
       .filter(Boolean);
 
-    const title = lines[0] || '';
-    const salary = lines.find(x => /\d+\s*-\s*\d+\s*[Kk]|\d+\s*[Kk]/.test(x)) || '';
-    const location = lines.find(x => /上海|北京|深圳|广州|杭州|成都|武汉|南京|苏州|重庆|西安/.test(x)) || '';
-    const company = lines.find(x => x !== title && x !== salary && x !== location && !/经验|学历|本科|大专|硕士/.test(x)) || '';
+    function pickBySelector(selectors) {
+      for (const selector of selectors) {
+        const el = card?.querySelector(selector);
+        const value = (el?.innerText || '').trim();
+        if (value) return value;
+      }
+      return '';
+    }
+
+    const title =
+      pickBySelector([
+        '.job-name',
+        '.job-title',
+        '[class*="job-name"]',
+        '[class*="job-title"]',
+        '.name'
+      ]) || lines[0] || '';
+
+    const salary =
+      lines.find(x => /\d+\s*-\s*\d+\s*[Kk]|\d+\s*[Kk]/.test(x)) || '';
+
+    const company =
+      pickBySelector([
+        '.company-name',
+        '[class*="company-name"]',
+        '.company-text',
+        '[class*="company"]'
+      ]) ||
+      lines.find(x => {
+        return !x.includes(title) &&
+          !x.includes(salary) &&
+          x.length >= 2 &&
+          x.length <= 30 &&
+          !/本科|大专|硕士|经验|年|上海|北京|深圳|广州|杭州|JMeter|Postman|Python|测试/.test(x);
+      }) || '';
+
+    const location =
+      lines.find(x => /上海|北京|深圳|广州|杭州|成都|武汉|南京|苏州|重庆|西安/.test(x)) || '';
+
+    const tags = lines.filter(x => {
+      return /本科|大专|硕士|经验|年|Python|Java|JMeter|Postman|Selenium|Playwright|自动化|接口|性能|测试/.test(x);
+    });
+
     const link =
       card?.querySelector('a[href*="/job_detail/"]')?.href ||
       card?.closest('a[href*="/job_detail/"]')?.href ||
       '';
 
-    return { title, company, salary, location, link };
+    return {
+      title,
+      company,
+      salary,
+      location,
+      tags,
+      link,
+      rawText: text
+    };
   }
 
   function getJobStableId(cardMeta) {
@@ -278,8 +326,24 @@ function getCurrentJobSnapshot() {
     for (const selector of titleSelectors) {
       const el = root.querySelector(selector);
       const value = (el?.innerText || '').trim();
-      if (value && value.length <= 80) {
+      if (value && value.length <= 80 && !/收藏|沟通|职位描述|岗位职责/.test(value)) {
         title = value;
+        break;
+      }
+    }
+
+    const companySelectors = [
+      '.company-name',
+      '[class*="company-name"]',
+      '.company-info .name',
+      '[class*="company"] .name'
+    ];
+
+    for (const selector of companySelectors) {
+      const el = root.querySelector(selector);
+      const value = (el?.innerText || '').trim();
+      if (value && value.length <= 60) {
+        company = value;
         break;
       }
     }
@@ -493,25 +557,54 @@ function getJobDetailText() {
     }
   }
 
-  function updateResultBox(result, snapshot = {}) {
+  function updateResultBox(result, snapshot = {}, cardMeta = {}) {
     const box = document.querySelector('#boss-helper-result');
     if (!box) return;
 
-    const matched = result.matchedKeywords.slice(0, 12).join('、') || '暂无';
-    const titles = result.matchedTitle.join('、') || '暂无';
-    const excludes = result.hitExcludes.join('、') || '无';
+    const matched = result.matchedKeywords?.slice(0, 12).join('、') || '暂无';
+    const missing = result.missingKeywords?.slice(0, 8).join('、') || '暂无';
+    const titles = result.matchedTitle?.join('、') || '暂无';
+    const excludes = result.hitExcludes?.join('、') || '无';
+    const detail = result.detail || {};
 
-    const currentTitle = snapshot.title || '未识别';
-    const currentSalary = snapshot.salary || '';
-    const currentLocation = snapshot.location || '';
+    const hasCardMeta = Boolean(cardMeta && Object.keys(cardMeta).length);
+    const leftTitle = cardMeta.title || '未识别';
+    const leftCompany = cardMeta.company || '';
+    const leftSalary = cardMeta.salary || '';
+    const leftLocation = cardMeta.location || '';
+
+    const rightTitle = snapshot.title || '未识别';
+    const rightCompany = snapshot.company || '';
+    const rightSalary = snapshot.salary || '';
+    const rightLocation = snapshot.location || '';
+    const syncOk = hasCardMeta ? isRightDetailMatchedWithCard(snapshot, cardMeta) : true;
 
     box.innerHTML = `
       <div class="bh-score ${result.recommendation === '推荐沟通' ? 'ok' : 'bad'}">${result.score}%</div>
-      <div><b>当前岗位：</b>${escapeHtml(currentTitle)}</div>
-      <div><b>岗位信息：</b>${escapeHtml([currentSalary, currentLocation].filter(Boolean).join(' / ') || '未识别')}</div>
-      <div><b>判断：</b>${result.recommendation}</div>
+      ${hasCardMeta ? `<div><b>同步状态：</b>${syncOk ? '已同步当前卡片' : '<span style="color:#b54708;">可能未同步</span>'}</div>` : ''}
+
+      ${hasCardMeta ? `
+        <hr style="border:none;border-top:1px solid #eee;margin:8px 0;" />
+        <div><b>左侧卡片：</b>${escapeHtml(leftTitle)}</div>
+        <div><b>左侧公司：</b>${escapeHtml(leftCompany || '未识别')}</div>
+        <div><b>左侧信息：</b>${escapeHtml([leftSalary, leftLocation].filter(Boolean).join(' / ') || '未识别')}</div>
+      ` : ''}
+
+      <hr style="border:none;border-top:1px solid #eee;margin:8px 0;" />
+      <div><b>${hasCardMeta ? '右侧详情' : '当前岗位'}：</b>${escapeHtml(rightTitle)}</div>
+      <div><b>${hasCardMeta ? '右侧公司' : '公司'}：</b>${escapeHtml(rightCompany || '未识别')}</div>
+      <div><b>${hasCardMeta ? '右侧信息' : '岗位信息'}：</b>${escapeHtml([rightSalary, rightLocation].filter(Boolean).join(' / ') || '未识别')}</div>
+
+      <hr style="border:none;border-top:1px solid #eee;margin:8px 0;" />
+      <div><b>判断：</b>${escapeHtml(result.recommendation)}</div>
+      ${detail.semanticScore !== undefined ? `<div><b>简历-JD相似度：</b>${detail.semanticScore}%</div>` : ''}
+      ${detail.skillScore !== undefined ? `<div><b>技能覆盖度：</b>${detail.skillScore}%</div>` : ''}
+      ${detail.titleScore !== undefined ? `<div><b>岗位方向：</b>${detail.titleScore}%</div>` : ''}
+      ${detail.conditionScore !== undefined ? `<div><b>硬性条件：</b>${detail.conditionScore}%</div>` : ''}
+      ${detail.experienceScore !== undefined ? `<div><b>年限匹配：</b>${detail.experienceScore}%</div>` : ''}
       <div><b>命中岗位：</b>${escapeHtml(titles)}</div>
-      <div><b>命中关键词：</b>${escapeHtml(matched)}</div>
+      <div><b>匹配能力：</b>${escapeHtml(matched)}</div>
+      <div><b>缺失能力：</b>${escapeHtml(missing)}</div>
       <div><b>排除词：</b>${escapeHtml(excludes)}</div>
     `;
   }
@@ -631,49 +724,52 @@ function getJobDetailText() {
     return visibleCards.slice(0, limit);
   }
 
-  function detailMatchesCard(snapshot, cardMeta) {
-    const detail = normalizeText([
-      snapshot.title,
-      snapshot.company,
-      snapshot.salary,
-      snapshot.location,
-      snapshot.text
-    ].filter(Boolean).join(' '));
+  function simpleText(str) {
+    return String(str || '')
+      .replace(/\s+/g, '')
+      .replace(/[（）()【】\[\]「」]/g, '')
+      .toLowerCase();
+  }
 
-    if (!detail) return false;
+  function isRightDetailMatchedWithCard(snapshot = {}, cardMeta = {}) {
+    const rightText = simpleText(snapshot.text || '');
+    const rightTitle = simpleText(snapshot.title || '');
+    const rightCompany = simpleText(snapshot.company || '');
 
-    const title = normalizeText(cardMeta.title);
-    const company = normalizeText(cardMeta.company);
-    const salary = normalizeText(cardMeta.salary);
-    const location = normalizeText(cardMeta.location);
+    const cardTitle = simpleText(cardMeta.title || '');
+    const cardCompany = simpleText(cardMeta.company || '');
 
-    const titleMatches = Boolean(title && detail.includes(title));
-    const companyMatches = Boolean(company && detail.includes(company));
-    const salaryMatches = Boolean(salary && detail.includes(salary));
-    const locationMatches = Boolean(location && detail.includes(location));
+    if (!rightText || !cardTitle) return false;
 
-    if (titleMatches) return true;
-    if (companyMatches && (salaryMatches || locationMatches)) return true;
-    if (companyMatches && !title) return true;
+    if (cardTitle && rightText.includes(cardTitle)) return true;
+    if (cardTitle.length >= 5 && rightText.includes(cardTitle.slice(0, 5))) return true;
+    if (cardTitle.length >= 4 && rightTitle.includes(cardTitle.slice(0, 4))) return true;
+    if (cardCompany && rightText.includes(cardCompany)) return true;
+    if (cardCompany && rightCompany && rightCompany.includes(cardCompany)) return true;
 
     return false;
   }
 
   async function waitRightDetailReadyForCard(cardMeta, timeout = 7000) {
     const start = Date.now();
-    let latest = getCurrentJobSnapshot();
+    let lastSnapshot = null;
 
     while (Date.now() - start < timeout) {
-      latest = getCurrentJobSnapshot();
+      await sleep(250);
 
-      if (detailMatchesCard(latest, cardMeta)) {
-        return { ok: true, snapshot: latest };
+      const snapshot = getCurrentJobSnapshot();
+      lastSnapshot = snapshot;
+
+      if (!snapshot.text || snapshot.text.length < 80) {
+        continue;
       }
 
-      await sleep(250);
+      if (isRightDetailMatchedWithCard(snapshot, cardMeta)) {
+        return { ok: true, snapshot };
+      }
     }
 
-    return { ok: false, snapshot: latest };
+    return { ok: false, snapshot: lastSnapshot || getCurrentJobSnapshot() };
   }
 
   function addJobToQueueIfAvailable(scoredJob, profile) {
@@ -749,8 +845,8 @@ function getJobDetailText() {
         `;
       }
 
-      card.scrollIntoView({ block: 'nearest', behavior: 'auto' });
-      await sleep(300);
+      card.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      await sleep(400);
       card.click();
 
       const waitResult = await waitRightDetailReadyForCard(cardMeta, 7000);
@@ -801,7 +897,7 @@ function getJobDetailText() {
       window.__bossScoredJobs.push(scoredJob);
 
       markCard(card, result);
-      updateResultBox(result, snapshot);
+      updateResultBox(result, snapshot, cardMeta);
 
       scannedIds.add(stableId);
       saveScannedJobIds(scannedIds);
