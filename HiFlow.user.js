@@ -640,12 +640,23 @@ function getJobDetailText() {
       snapshot.text
     ].filter(Boolean).join(' '));
 
+    if (!detail) return false;
+
     const title = normalizeText(cardMeta.title);
     const company = normalizeText(cardMeta.company);
+    const salary = normalizeText(cardMeta.salary);
+    const location = normalizeText(cardMeta.location);
 
-    if (title && detail.includes(title)) return true;
-    if (company && detail.includes(company) && (!title || detail.includes(title.slice(0, 8)))) return true;
-    return Boolean(snapshot.text && snapshot.text.length >= 80);
+    const titleMatches = Boolean(title && detail.includes(title));
+    const companyMatches = Boolean(company && detail.includes(company));
+    const salaryMatches = Boolean(salary && detail.includes(salary));
+    const locationMatches = Boolean(location && detail.includes(location));
+
+    if (titleMatches) return true;
+    if (companyMatches && (salaryMatches || locationMatches)) return true;
+    if (companyMatches && !title) return true;
+
+    return false;
   }
 
   async function waitRightDetailReadyForCard(cardMeta, timeout = 7000) {
@@ -752,9 +763,6 @@ function getJobDetailText() {
           score: 0,
           recommendation: '未同步'
         });
-
-        scannedIds.add(stableId);
-        saveScannedJobIds(scannedIds);
 
         continue;
       }
