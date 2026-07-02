@@ -645,7 +645,8 @@ function getJobDetailText() {
 
     if (title && detail.includes(title)) return true;
     if (company && detail.includes(company) && (!title || detail.includes(title.slice(0, 8)))) return true;
-    return Boolean(snapshot.text && snapshot.text.length >= 80);
+
+    return false;
   }
 
   async function waitRightDetailReadyForCard(cardMeta, timeout = 7000) {
