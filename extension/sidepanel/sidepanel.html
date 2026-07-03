@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>HiFlow</title>
+  <link rel="stylesheet" href="sidepanel.css" />
+</head>
+<body>
+  <main class="app">
+    <header class="topbar">
+      <div>
+        <h1>HiFlow</h1>
+        <p id="page-state" class="muted">等待页面状态</p>
+      </div>
+      <span id="service-pill" class="pill">未连接</span>
+    </header>
+
+    <section class="section" aria-labelledby="settings-title">
+      <h2 id="settings-title">配置</h2>
+      <div class="field">
+        <label for="resume-id">简历 ID</label>
+        <input id="resume-id" type="text" autocomplete="off" />
+      </div>
+      <div class="field">
+        <label for="threshold">阈值</label>
+        <input id="threshold" type="number" min="0" max="100" step="1" />
+      </div>
+      <div class="field">
+        <label for="scan-limit">每批扫描数量</label>
+        <input id="scan-limit" type="number" min="1" max="20" step="1" />
+      </div>
+      <div class="field">
+        <label for="service-url">本地服务</label>
+        <input id="service-url" type="url" autocomplete="off" />
+      </div>
+      <label class="check-row" for="auto-send">
+        <input id="auto-send" type="checkbox" />
+        <span>自动点击发送</span>
+      </label>
+      <button id="save-settings" type="button">保存配置</button>
+    </section>
+
+    <section class="section" aria-labelledby="resume-title">
+      <div class="section-head">
+        <h2 id="resume-title">我的简历画像</h2>
+        <button id="load-resumes" type="button" class="secondary">读取</button>
+      </div>
+      <div class="field">
+        <label for="resume-name">名称</label>
+        <input id="resume-name" type="text" autocomplete="off" />
+      </div>
+      <div class="field">
+        <label for="resume-summary">简历摘要</label>
+        <textarea id="resume-summary" rows="5"></textarea>
+      </div>
+      <div class="field">
+        <label for="target-titles">目标岗位</label>
+        <textarea id="target-titles" rows="3"></textarea>
+      </div>
+      <div class="field">
+        <label for="resume-skills">技能关键词</label>
+        <textarea id="resume-skills" rows="5"></textarea>
+      </div>
+      <div class="field">
+        <label for="exclude-keywords">排除词</label>
+        <textarea id="exclude-keywords" rows="3"></textarea>
+      </div>
+      <button id="save-resume" type="button">保存简历画像</button>
+    </section>
+
+    <section class="section action-grid" aria-label="岗位操作">
+      <button id="analyze-current" type="button">分析当前岗位</button>
+      <button id="scan-visible" type="button">扫描当前批次</button>
+      <button id="scan-prepare" type="button">扫描并准备打招呼</button>
+      <button id="add-current" type="button">加入当前岗位</button>
+      <button id="add-scan" type="button">加入推荐岗位</button>
+      <button id="refresh-chat" type="button">刷新 Chat 状态</button>
+      <button id="clear-logs" type="button" class="secondary">清空日志</button>
+    </section>
+
+    <section class="section" aria-labelledby="current-title">
+      <h2 id="current-title">当前匹配</h2>
+      <div id="current-result" class="empty" role="status">暂无匹配结果</div>
+    </section>
+
+    <section class="section" aria-labelledby="scan-title">
+      <div class="section-head">
+        <h2 id="scan-title">扫描结果</h2>
+        <span id="scan-count" class="count">0</span>
+      </div>
+      <ol id="scan-results" class="list"></ol>
+    </section>
+
+    <section class="section" aria-labelledby="queue-title">
+      <div class="section-head">
+        <h2 id="queue-title">投递队列</h2>
+        <span id="queue-count" class="count">0</span>
+      </div>
+      <ol id="queue-list" class="list"></ol>
+    </section>
+
+    <section class="section" aria-labelledby="logs-title">
+      <div class="section-head">
+        <h2 id="logs-title">日志</h2>
+        <span id="log-count" class="count">0</span>
+      </div>
+      <ol id="logs" class="log-list"></ol>
+    </section>
+  </main>
+
+  <script src="sidepanel.js"></script>
+</body>
+</html>

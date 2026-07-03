@@ -1,0 +1,369 @@
+:host {
+  all: initial;
+  color-scheme: light;
+  --hiflow-bg: #f5f7f8;
+  --hiflow-surface: #ffffff;
+  --hiflow-surface-muted: #eef2f3;
+  --hiflow-text: #16211f;
+  --hiflow-muted: #64716e;
+  --hiflow-border: #d9e0df;
+  --hiflow-accent: #0f766e;
+  --hiflow-accent-strong: #0a5d57;
+  --hiflow-danger: #b42318;
+  --hiflow-warning: #a15c07;
+  --hiflow-ok: #087443;
+  --hiflow-shadow: 0 16px 48px rgba(17, 24, 39, 0.18);
+  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+.hiflow-shell {
+  position: fixed;
+  top: 76px;
+  right: 16px;
+  z-index: 2147483647;
+  display: grid;
+  justify-items: end;
+  gap: 8px;
+  color: var(--hiflow-text);
+}
+
+.hiflow-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid rgba(15, 118, 110, 0.3);
+  border-radius: 999px;
+  color: #ffffff;
+  background: var(--hiflow-accent);
+  box-shadow: 0 8px 24px rgba(15, 118, 110, 0.22);
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.hiflow-toggle:hover {
+  background: var(--hiflow-accent-strong);
+}
+
+.hiflow-toggle-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: #9ff5cf;
+}
+
+.hiflow-panel {
+  width: min(378px, calc(100vw - 24px));
+  max-height: calc(100vh - 128px);
+  display: grid;
+  overflow: hidden;
+  border: 1px solid var(--hiflow-border);
+  border-radius: 8px;
+  background: var(--hiflow-bg);
+  box-shadow: var(--hiflow-shadow);
+}
+
+.hiflow-shell.is-collapsed .hiflow-panel {
+  display: none;
+}
+
+.hiflow-app {
+  display: grid;
+  gap: 10px;
+  max-height: inherit;
+  overflow: auto;
+  padding: 12px;
+  scrollbar-width: thin;
+}
+
+.hiflow-topbar,
+.hiflow-section {
+  background: var(--hiflow-surface);
+  border: 1px solid var(--hiflow-border);
+  border-radius: 8px;
+}
+
+.hiflow-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+}
+
+.hiflow-title {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.2;
+  font-weight: 800;
+  color: var(--hiflow-text);
+}
+
+.hiflow-subtitle,
+.hiflow-meta {
+  color: var(--hiflow-muted);
+}
+
+.hiflow-subtitle {
+  margin: 2px 0 0;
+  max-width: 230px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hiflow-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hiflow-icon-button {
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  min-height: 30px;
+  padding: 0;
+  border: 1px solid var(--hiflow-border);
+  border-radius: 6px;
+  color: var(--hiflow-text);
+  background: var(--hiflow-surface);
+  line-height: 1;
+}
+
+.hiflow-section {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.hiflow-section-title {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.3;
+  font-weight: 800;
+  color: var(--hiflow-text);
+}
+
+.hiflow-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.hiflow-field {
+  display: grid;
+  gap: 5px;
+}
+
+.hiflow-field label {
+  font-weight: 700;
+  color: var(--hiflow-text);
+}
+
+.hiflow-input {
+  width: 100%;
+  min-height: 34px;
+  padding: 6px 8px;
+  border: 1px solid var(--hiflow-border);
+  border-radius: 6px;
+  color: var(--hiflow-text);
+  background: var(--hiflow-surface);
+  outline: none;
+}
+
+.hiflow-textarea {
+  min-height: 76px;
+  resize: vertical;
+}
+
+.hiflow-input:focus,
+.hiflow-textarea:focus,
+.hiflow-button:focus-visible,
+.hiflow-toggle:focus-visible {
+  outline: 2px solid rgba(15, 118, 110, 0.35);
+  outline-offset: 2px;
+}
+
+.hiflow-check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  color: var(--hiflow-text);
+}
+
+.hiflow-check-row input {
+  width: 16px;
+  min-height: 16px;
+}
+
+.hiflow-button {
+  min-height: 34px;
+  padding: 7px 10px;
+  border: 1px solid var(--hiflow-accent);
+  border-radius: 6px;
+  color: #ffffff;
+  background: var(--hiflow-accent);
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.hiflow-button:hover {
+  background: var(--hiflow-accent-strong);
+}
+
+.hiflow-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
+.hiflow-button.secondary {
+  color: var(--hiflow-text);
+  border-color: var(--hiflow-border);
+  background: var(--hiflow-surface);
+}
+
+.hiflow-button.secondary:hover {
+  background: var(--hiflow-surface-muted);
+}
+
+.hiflow-action-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.hiflow-pill,
+.hiflow-count {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  background: var(--hiflow-surface-muted);
+  color: var(--hiflow-muted);
+  white-space: nowrap;
+}
+
+.hiflow-pill.ok {
+  background: #dcfce7;
+  color: var(--hiflow-ok);
+}
+
+.hiflow-pill.bad {
+  background: #fee4e2;
+  color: var(--hiflow-danger);
+}
+
+.hiflow-empty {
+  padding: 10px;
+  border: 1px dashed var(--hiflow-border);
+  border-radius: 6px;
+  color: var(--hiflow-muted);
+  background: #fbfcfc;
+}
+
+.hiflow-score-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.hiflow-score {
+  font-size: 28px;
+  font-weight: 850;
+  line-height: 1;
+}
+
+.hiflow-decision {
+  font-weight: 800;
+}
+
+.hiflow-decision.ok {
+  color: var(--hiflow-ok);
+}
+
+.hiflow-decision.bad {
+  color: var(--hiflow-warning);
+}
+
+.hiflow-points {
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.hiflow-list,
+.hiflow-log-list {
+  display: grid;
+  gap: 8px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.hiflow-item {
+  display: grid;
+  gap: 5px;
+  padding: 9px;
+  border: 1px solid var(--hiflow-border);
+  border-radius: 6px;
+  background: #fbfcfd;
+}
+
+.hiflow-item-title {
+  min-width: 0;
+  font-weight: 780;
+  overflow-wrap: anywhere;
+}
+
+.hiflow-item-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.hiflow-log-item {
+  padding: 8px 0;
+  border-top: 1px solid var(--hiflow-border);
+}
+
+.hiflow-log-time {
+  display: block;
+  color: var(--hiflow-muted);
+  font-size: 12px;
+}
+
+@media (max-width: 520px) {
+  .hiflow-shell {
+    top: 64px;
+    right: 12px;
+  }
+
+  .hiflow-panel {
+    max-height: calc(100vh - 112px);
+  }
+}
+
+@media (max-width: 360px) {
+  .hiflow-action-grid {
+    grid-template-columns: 1fr;
+  }
+}

@@ -960,7 +960,7 @@ function getJobDetailText() {
     }
     lastResult = result;
 
-    updateResultBox(result, getCurrentJobSnapshot());
+    updateResultBox(result, snapshot);
 
     if (result.score < Number(profile.threshold || 83)) {
       alert(`当前匹配度 ${result.score}%，低于阈值 ${profile.threshold}%，不建议沟通。`);
@@ -1209,7 +1209,7 @@ function getJobDetailText() {
   function simpleText(str) {
     return String(str || '')
       .replace(/\s+/g, '')
-      .replace(/[（）()【】\[\]「」]/g, '')
+      .replace(/[（）()【】\[\]「」《》<>，。,.、/\\|｜:：;；·•_\-]/g, '')
       .toLowerCase();
   }
 
@@ -1242,22 +1242,20 @@ function getJobDetailText() {
 
     if (!rightText || !cardTitle) return false;
 
-    const titleMatched = rightText.includes(cardTitle) || isTextIncluded(rightTitle, cardTitle);
-    if (!titleMatched) {
-      return isSectionOnlyDetailSnapshot(snapshot);
+    if (rightText.includes(cardTitle) || isTextIncluded(rightTitle, cardTitle)) return true;
+    if (cardTitle.length >= 5 && rightText.includes(cardTitle.slice(0, 5))) return true;
+    if (cardTitle.length >= 4 && rightTitle.includes(cardTitle.slice(0, 4))) return true;
+
+    if (cardCompany && (rightText.includes(cardCompany) || isTextIncluded(rightCompany, cardCompany))) {
+      return true;
     }
 
-    const supportingFields = [
-      { card: cardCompany, detail: rightCompany },
-      { card: cardSalary, detail: rightSalary },
-      { card: cardLocation, detail: rightLocation }
-    ].filter(field => field.card);
+    const supportMatches = [
+      cardSalary && (rightText.includes(cardSalary) || isTextIncluded(rightSalary, cardSalary)),
+      cardLocation && (rightText.includes(cardLocation) || isTextIncluded(rightLocation, cardLocation))
+    ].filter(Boolean).length;
 
-    if (!supportingFields.length) return true;
-
-    return supportingFields.every(field => {
-      return rightText.includes(field.card) || isTextIncluded(field.detail, field.card);
-    });
+    return isSectionOnlyDetailSnapshot(snapshot) && supportMatches > 0;
   }
 
   async function waitRightDetailReadyForCard(cardMeta, timeout = 7000) {
@@ -1351,6 +1349,22 @@ function getJobDetailText() {
       if (!waitResult.ok) {
         console.warn('右侧详情未同步当前卡片，跳过：', cardMeta, snapshot);
 
+        if (status) {
+          status.textContent = `第 ${i + 1} 条右侧详情可能未同步，已跳过`;
+        }
+
+        const box = document.querySelector('#boss-helper-result');
+        if (box) {
+          box.innerHTML = `
+            <div style="color:#b54708;font-weight:700;">右侧详情可能未同步</div>
+            <div><b>左侧卡片：</b>${escapeHtml(cardMeta.title || '未识别')}</div>
+            <div><b>左侧公司：</b>${escapeHtml(cardMeta.company || '未识别')}</div>
+            <div><b>右侧详情：</b>${escapeHtml(snapshot?.title || '未识别')}</div>
+            <div><b>右侧公司：</b>${escapeHtml(snapshot?.company || '未识别')}</div>
+            <div style="margin-top:6px;color:#666;">已跳过本条，避免使用上一条岗位详情评分。</div>
+          `;
+        }
+
         markCard(card, {
           score: 0,
           recommendation: '未同步'
@@ -1362,6 +1376,10 @@ function getJobDetailText() {
       const jobText = snapshot.text;
 
       if (!jobText || jobText.length < 80) {
+        if (status) {
+          status.textContent = `第 ${i + 1} 条未识别到右侧岗位详情，已跳过`;
+        }
+
         markCard(card, {
           score: 0,
           recommendation: '无详情'
@@ -1373,7 +1391,24 @@ function getJobDetailText() {
         continue;
       }
 
-      const result = calcMatch(profile, jobText);
+      let result = calcMatch(profile, jobText);
+
+      if (profile.useLocalApi) {
+        if (status) {
+          status.textContent = `扫描当前批次：${i + 1}/${cards.length}，正在调用本地 match 接口`;
+        }
+
+        try {
+          result = await requestLocalMatch(profile, snapshot, cardMeta);
+        } catch (error) {
+          console.warn('本地 match 接口调用失败，回退关键词评分：', error);
+          if (status) {
+            status.textContent = `本地接口失败，已回退关键词评分：${error.message}`;
+          }
+        }
+      }
+
+      lastResult = result;
 
       const scoredJob = {
         id: stableId,
