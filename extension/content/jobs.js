@@ -3,6 +3,7 @@
 
   const MAX_SCAN_COUNT = 8;
   const lastScannedCards = new Map();
+  const CARD_SCORE_STYLE_ID = 'hiflow-job-card-score-style';
 
   function makeJobId(jobMeta = {}) {
     return [
@@ -32,12 +33,68 @@
     return payload;
   }
 
+  function simpleText(value) {
+    return String(value || '')
+      .replace(/\s+/g, '')
+      .replace(/[()（）【】\[\]「」『』<>《》，,.。/\\|·\-_:：;；]/g, '')
+      .toLowerCase();
+  }
+
+  function doesSnapshotMatchCard(snapshot = {}, cardMeta = {}) {
+    const detailText = simpleText(snapshot.text || '');
+    const detailTitle = simpleText(snapshot.title || '');
+    const detailCompany = simpleText(snapshot.company || '');
+    const cardTitle = simpleText(cardMeta.title || '');
+    const cardCompany = simpleText(cardMeta.company || '');
+
+    if (!cardTitle) return false;
+    if (detailText.includes(cardTitle) || detailTitle.includes(cardTitle) || cardTitle.includes(detailTitle)) return true;
+    if (cardTitle.length >= 5 && detailText.includes(cardTitle.slice(0, 5))) return true;
+    if (cardTitle.length >= 4 && detailTitle.includes(cardTitle.slice(0, 4))) return true;
+    return Boolean(cardCompany && (detailText.includes(cardCompany) || detailCompany.includes(cardCompany)));
+  }
+
+  function getCurrentCardEntry(snapshot = {}) {
+    const cards = window.HiFlowDom.getCurrentVisibleJobCards(MAX_SCAN_COUNT);
+    const activeSelectors = [
+      '.job-card-wrapper.active',
+      '.job-card-wrapper.selected',
+      '.job-card-wrapper.cur',
+      '.job-card-body.active',
+      '.job-card-body.selected',
+      '[class*="job-card"][class*="active"]',
+      '[class*="job-card"][class*="selected"]'
+    ];
+
+    for (const selector of activeSelectors) {
+      const activeCard = document.querySelector(selector);
+      if (!activeCard) continue;
+      const card = cards.find(item => item === activeCard || item.contains(activeCard) || activeCard.contains(item)) || activeCard;
+      const cardMeta = window.HiFlowDom.extractJobCardMeta(card);
+      if (doesSnapshotMatchCard(snapshot, cardMeta)) return { card, cardMeta };
+    }
+
+    for (const card of cards) {
+      const cardMeta = window.HiFlowDom.extractJobCardMeta(card);
+      if (doesSnapshotMatchCard(snapshot, cardMeta)) return { card, cardMeta };
+    }
+
+    return null;
+  }
+
   async function collectCurrentJob() {
     const snapshot = window.HiFlowDom.getCurrentJobSnapshot();
+    const currentEntry = getCurrentCardEntry(snapshot);
+    const job = makeJobPayload(currentEntry?.cardMeta || {}, snapshot);
+
+    if (currentEntry?.card) {
+      lastScannedCards.set(job.id, currentEntry);
+    }
+
     return {
       ok: Boolean(snapshot.text && snapshot.text.length >= 80),
       page: 'jobs',
-      job: makeJobPayload({}, snapshot)
+      job
     };
   }
 
@@ -114,6 +171,92 @@
     return null;
   }
 
+  function ensureCardScoreStyle() {
+    if (document.getElementById(CARD_SCORE_STYLE_ID)) return;
+
+    const style = document.createElement('style');
+    style.id = CARD_SCORE_STYLE_ID;
+    style.textContent = `
+      .hiflow-job-card-scored {
+        position: relative !important;
+      }
+      .hiflow-job-score-badge {
+        position: absolute;
+        top: 10px;
+        right: 12px;
+        z-index: 20;
+        display: inline-grid;
+        grid-template-columns: auto auto;
+        align-items: baseline;
+        gap: 4px;
+        min-width: 76px;
+        min-height: 28px;
+        padding: 3px 8px 4px;
+        border: 1px solid rgba(8, 125, 112, 0.28);
+        border-radius: 6px;
+        color: #075d58;
+        background: rgba(238, 246, 244, 0.96);
+        box-shadow: 0 6px 16px rgba(15, 23, 42, 0.10);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        line-height: 1;
+        pointer-events: none;
+      }
+      .hiflow-job-score-badge strong {
+        font-size: 18px;
+        font-weight: 900;
+        letter-spacing: 0;
+      }
+      .hiflow-job-score-badge span {
+        font-size: 11px;
+        font-weight: 760;
+        white-space: nowrap;
+      }
+      .hiflow-job-score-badge.is-warn {
+        border-color: rgba(223, 95, 24, 0.30);
+        color: #b54708;
+        background: rgba(255, 247, 237, 0.96);
+      }
+      .hiflow-job-score-badge.is-low {
+        border-color: rgba(148, 163, 184, 0.36);
+        color: #475569;
+        background: rgba(248, 250, 252, 0.96);
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function getScoreTone(result = {}) {
+    const score = Number(result.score || 0);
+    if (result.decision === 'RECOMMEND' || score >= 90) return 'ok';
+    if (score >= 70) return 'warn';
+    return 'low';
+  }
+
+  function renderScoreOnJobCard(result = {}) {
+    const entry = findCardForJob(result);
+    const card = entry?.card;
+    if (!card) return { ok: false, reason: 'CARD_NOT_FOUND' };
+
+    ensureCardScoreStyle();
+    card.classList.add('hiflow-job-card-scored');
+    card.setAttribute('data-hiflow-score', String(Number(result.score || 0)));
+
+    const previous = card.querySelector(':scope > .hiflow-job-score-badge');
+    if (previous) previous.remove();
+
+    const badge = document.createElement('div');
+    const tone = getScoreTone(result);
+    badge.className = `hiflow-job-score-badge is-${tone}`;
+    badge.setAttribute('aria-label', `HiFlow 匹配分 ${Number(result.score || 0)}%`);
+    badge.innerHTML = `
+      <strong>${Number(result.score || 0)}%</strong>
+      <span>${tone === 'ok' ? '可沟通' : tone === 'warn' ? '待确认' : '偏低'}</span>
+    `;
+    card.appendChild(badge);
+
+    return { ok: true };
+  }
+
   function findClickableByText(texts) {
     const candidates = Array.from(document.querySelectorAll('button, a, div, span'))
       .filter(el => {
@@ -134,53 +277,34 @@
     return null;
   }
 
-  function findGreetingInput() {
-    const selectors = [
-      'textarea',
-      'input[type="text"]',
-      '[contenteditable="true"]',
-      '.chat-input textarea',
-      '.input-area textarea',
-      '[class*="input"] textarea',
-      '[class*="editor"]'
-    ];
-
-    for (const selector of selectors) {
-      const el = document.querySelector(selector);
-      if (!el) continue;
-      const rect = el.getBoundingClientRect();
-      const style = window.getComputedStyle(el);
-      if (rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden') {
-        return el;
-      }
-    }
-
-    return null;
-  }
-
-  function fillInput(input, text) {
-    input.focus();
-
-    if ('value' in input) {
-      input.value = text;
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      input.dispatchEvent(new Event('change', { bubbles: true }));
-      return;
-    }
-
-    input.innerText = text;
-    input.dispatchEvent(new InputEvent('input', {
-      bubbles: true,
-      inputType: 'insertText',
-      data: text
-    }));
-  }
-
-  async function prepareGreetingForJobs(jobs = [], options = {}) {
+  async function prepareGreetingForJobs(jobs = []) {
     const actions = [];
-    const autoSend = Boolean(options.autoSend);
 
     for (const job of jobs) {
+      if (job.current) {
+        const communicateBtn = findClickableByText(['立即沟通', '继续沟通', '打招呼', '感兴趣', '沟通']);
+        if (!communicateBtn) {
+          actions.push({
+            id: job.id,
+            status: 'COMMUNICATE_BUTTON_NOT_FOUND',
+            title: job.jobMeta?.title || '',
+            message: '没有找到沟通按钮'
+          });
+          continue;
+        }
+
+        communicateBtn.click();
+        await window.HiFlowDom.sleep(900);
+
+        actions.push({
+          id: job.id,
+          status: 'BOSS_GREETING_TRIGGERED',
+          title: job.jobMeta?.title || '',
+          message: '匹配通过，已点击 BOSS 沟通/打招呼按钮'
+        });
+        continue;
+      }
+
       const entry = findCardForJob(job);
 
       if (!entry?.card) {
@@ -220,52 +344,13 @@
       }
 
       communicateBtn.click();
-      await window.HiFlowDom.sleep(1000);
-
-      const input = findGreetingInput();
-      if (!input) {
-        actions.push({
-          id: job.id,
-          status: 'COMMUNICATE_OPENED_NO_INPUT',
-          title: job.jobMeta?.title || '',
-          message: '已点击沟通，但没有识别到输入框'
-        });
-        continue;
-      }
-
-      fillInput(input, job.firstMessage || '您好，我对这个岗位比较感兴趣，方便进一步沟通吗？');
-
-      if (autoSend) {
-        await window.HiFlowDom.sleep(500);
-        const sendBtn = findClickableByText(['发送']);
-
-        if (!sendBtn) {
-          actions.push({
-            id: job.id,
-            status: 'SEND_BUTTON_NOT_FOUND',
-            title: job.jobMeta?.title || '',
-            message: '已填入话术，但没有找到发送按钮'
-          });
-          continue;
-        }
-
-        sendBtn.click();
-        actions.push({
-          id: job.id,
-          status: 'GREETING_SENT',
-          title: job.jobMeta?.title || '',
-          message: '已填入并发送第一条打招呼'
-        });
-
-        await window.HiFlowDom.sleep(1200);
-        continue;
-      }
+      await window.HiFlowDom.sleep(900);
 
       actions.push({
         id: job.id,
-        status: 'GREETING_FILLED',
+        status: 'BOSS_GREETING_TRIGGERED',
         title: job.jobMeta?.title || '',
-        message: '已打开沟通并填入话术，等待人工确认发送'
+        message: '已点击 BOSS 沟通/打招呼按钮'
       });
 
       await window.HiFlowDom.sleep(900);
@@ -292,10 +377,15 @@
     }
 
     if (message.type === 'HIFLOW_PREPARE_GREETING_FOR_JOBS') {
-      prepareGreetingForJobs(message.jobs || [], { autoSend: message.autoSend }).then(sendResponse).catch(error => {
+      prepareGreetingForJobs(message.jobs || []).then(sendResponse).catch(error => {
         sendResponse({ ok: false, error: error.message });
       });
       return true;
+    }
+
+    if (message.type === 'HIFLOW_RENDER_JOB_SCORE') {
+      sendResponse(renderScoreOnJobCard(message.result || {}));
+      return false;
     }
 
     return false;

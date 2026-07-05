@@ -358,9 +358,12 @@ def sanitize_resume(payload: dict[str, Any]) -> dict[str, Any]:
     resume_id = str(payload.get("id") or "").strip()
     name = str(payload.get("name") or resume_id).strip()
     summary = str(payload.get("summary") or "").strip()
+    raw_text = str(payload.get("raw_text") or "").strip()
 
     if len(summary) > 20_000:
         raise ValueError("简历摘要过长，请控制在 20000 字以内")
+    if len(raw_text) > 40_000:
+        raise ValueError("简历原文过长，请控制在 40000 字以内")
 
     return {
         "id": resume_id,
@@ -369,6 +372,9 @@ def sanitize_resume(payload: dict[str, Any]) -> dict[str, Any]:
         "target_titles": normalize_list(payload.get("target_titles")),
         "skills": normalize_list(payload.get("skills")),
         "exclude_keywords": normalize_list(payload.get("exclude_keywords")),
+        "source": str(payload.get("source") or "").strip()[:80],
+        "raw_text": raw_text,
+        "collected_at": str(payload.get("collected_at") or "").strip()[:80],
     }
 
 

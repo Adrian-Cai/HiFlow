@@ -12,7 +12,8 @@ const STORAGE_KEYS = {
   scanResults: 'hiflow.scanResults',
   queue: 'hiflow.queue',
   logs: 'hiflow.logs',
-  pageState: 'hiflow.pageState'
+  pageState: 'hiflow.pageState',
+  resumeCapture: 'hiflow.resumeCapture'
 };
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -60,7 +61,10 @@ async function handleMessage(message, sender) {
   if (message.type === 'HIFLOW_UPDATE_SETTINGS') return updateSettings(message.payload || {});
   if (message.type === 'HIFLOW_SAVE_RESUME') return saveResume(message.payload || {});
   if (message.type === 'HIFLOW_REFRESH_RESUMES') return refreshResumes();
+  if (message.type === 'HIFLOW_OPEN_RESUME_PAGE') return openResumePage();
+  if (message.type === 'HIFLOW_CAPTURE_RESUME_PROFILE') return captureResumeProfile();
   if (message.type === 'HIFLOW_ANALYZE_CURRENT') return analyzeCurrentJob();
+  if (message.type === 'HIFLOW_ANALYZE_AND_PREPARE_CURRENT') return analyzeAndPrepareCurrentJob();
   if (message.type === 'HIFLOW_SCAN_VISIBLE') return scanVisibleJobs();
   if (message.type === 'HIFLOW_ADD_CURRENT_TO_QUEUE') return addCurrentToQueue();
   if (message.type === 'HIFLOW_ADD_SCAN_RECOMMENDED') return addScanRecommendedToQueue();
@@ -82,7 +86,8 @@ async function getState() {
     scanResults: stored[STORAGE_KEYS.scanResults] || [],
     queue: stored[STORAGE_KEYS.queue] || [],
     logs: stored[STORAGE_KEYS.logs] || [],
-    pageState: stored[STORAGE_KEYS.pageState] || null
+    pageState: stored[STORAGE_KEYS.pageState] || null,
+    resumeCapture: stored[STORAGE_KEYS.resumeCapture] || null
   };
 }
 
@@ -115,7 +120,10 @@ async function saveResume(resume) {
     summary: String(resume.summary || '').trim(),
     target_titles: splitLines(resume.targetTitles),
     skills: splitLines(resume.skills),
-    exclude_keywords: splitLines(resume.excludeKeywords)
+    exclude_keywords: splitLines(resume.excludeKeywords),
+    source: String(resume.source || '').trim(),
+    raw_text: String(resume.rawText || resume.raw_text || '').trim(),
+    collected_at: String(resume.collectedAt || resume.collected_at || '').trim()
   };
 
   const response = await fetch(`${baseUrl}/resumes`, {
@@ -156,6 +164,77 @@ async function refreshResumes() {
   };
 }
 
+async function openResumePage() {
+  const resumeUrl = 'https://www.zhipin.com/web/geek/resume';
+  const tab = await getActiveTab();
+
+  if (tab?.id && /^https:\/\/www\.zhipin\.com\//.test(tab.url || '')) {
+    await chrome.tabs.update(tab.id, { url: resumeUrl });
+  } else {
+    await chrome.tabs.create({ url: resumeUrl });
+  }
+
+  await setResumeCapture({
+    status: 'OPENING',
+    message: '已打开 BOSS 简历页',
+    updatedAt: new Date().toISOString()
+  });
+  await appendLog('已打开 BOSS 简历页');
+  return getState();
+}
+
+async function captureResumeProfile() {
+  const tab = await getActiveTab();
+  if (!/https:\/\/www\.zhipin\.com\/web\/geek\/resume/.test(tab.url || '')) {
+    await setResumeCapture({
+      status: 'NEEDS_RESUME_PAGE',
+      message: '请先进入 BOSS 简历页',
+      updatedAt: new Date().toISOString()
+    });
+    throw new Error('请先进入 BOSS 简历页再识别简历信息');
+  }
+
+  const collected = await sendTabMessage(tab.id, { type: 'HIFLOW_COLLECT_RESUME_PROFILE' });
+  if (!collected?.ok || !collected.resume?.summary) {
+    await setResumeCapture({
+      status: 'EMPTY',
+      message: collected?.error || '没有识别到可保存的简历信息',
+      updatedAt: new Date().toISOString()
+    });
+    throw new Error(collected?.error || '没有识别到可保存的简历信息');
+  }
+
+  const state = await getState();
+  const resumeId = state.settings.selectedResumeId || DEFAULT_SETTINGS.selectedResumeId;
+  const resume = {
+    ...collected.resume,
+    id: resumeId
+  };
+
+  try {
+    await saveResume(resume);
+  } catch (error) {
+    await setResumeCapture({
+      status: 'SAVE_FAILED',
+      message: error.message || '保存简历信息失败',
+      updatedAt: new Date().toISOString()
+    });
+    throw error;
+  }
+
+  await setResumeCapture({
+    status: 'SAVED',
+    message: '简历信息已识别并保存',
+    name: resume.name || resumeId,
+    targetTitles: splitLines(resume.targetTitles),
+    skillsCount: splitLines(resume.skills).length,
+    summaryLength: String(resume.summary || '').length,
+    updatedAt: new Date().toISOString()
+  });
+  await appendLog(`已从 BOSS 简历页保存简历信息：${resume.name || resumeId}`);
+  return refreshResumes();
+}
+
 async function analyzeCurrentJob() {
   const tab = await getActiveTab();
   const collected = await sendTabMessage(tab.id, { type: 'HIFLOW_COLLECT_CURRENT_JOB' });
@@ -165,8 +244,47 @@ async function analyzeCurrentJob() {
   }
 
   const result = await matchJob(collected.job);
+  await renderJobScoreOnCard(tab.id, result);
   await chrome.storage.local.set({ [STORAGE_KEYS.currentResult]: result });
   await appendLog(`当前岗位评分完成: ${result.jobMeta.title || '未识别'} ${result.score}%`);
+  return getState();
+}
+
+async function analyzeAndPrepareCurrentJob() {
+  const tab = await getActiveTab();
+  const state = await getState();
+  const threshold = Number(state.settings.threshold || DEFAULT_SETTINGS.threshold);
+  const collected = await sendTabMessage(tab.id, { type: 'HIFLOW_COLLECT_CURRENT_JOB' });
+
+  if (!collected?.ok || !collected.job?.jobText) {
+    throw new Error(collected?.error || '当前页面没有识别到岗位详情');
+  }
+
+  const result = await matchJob(collected.job);
+  await renderJobScoreOnCard(tab.id, result);
+  await chrome.storage.local.set({ [STORAGE_KEYS.currentResult]: result });
+
+  if (Number(result.score || 0) < threshold || result.decision !== 'RECOMMEND') {
+    await appendLog(`当前岗位 ${result.score}% 未达到阈值 ${threshold}%，未打招呼`);
+    return getState();
+  }
+
+  const applyResult = await sendTabMessage(tab.id, {
+    type: 'HIFLOW_PREPARE_GREETING_FOR_JOBS',
+    jobs: [{
+      id: result.id,
+      current: true,
+      jobMeta: result.jobMeta || {}
+    }],
+    autoSend: false
+  });
+
+  if (!applyResult?.ok) {
+    throw new Error(applyResult?.error || '准备打招呼失败');
+  }
+
+  const action = (applyResult.actions || [])[0];
+  await appendLog(action?.message || `当前岗位 ${result.score}% 已准备打招呼`);
   return getState();
 }
 
@@ -184,6 +302,7 @@ async function scanVisibleJobs() {
   for (const job of collected.jobs || []) {
     const result = await matchJob(job);
     results.push(result);
+    await renderJobScoreOnCard(tab.id, result);
     await appendLog(`扫描评分: ${result.jobMeta.title || '未识别'} ${result.score}% ${result.decision}`);
   }
 
@@ -232,14 +351,13 @@ async function scanAndPrepareGreeting() {
 
   const actionPayload = recommended.map(result => ({
     id: result.id,
-    jobMeta: result.jobMeta || {},
-    firstMessage: result.suggestedFirstMessage || '您好，我对这个岗位比较感兴趣，方便进一步沟通吗？'
+    jobMeta: result.jobMeta || {}
   }));
 
   const applyResult = await sendTabMessage(tab.id, {
     type: 'HIFLOW_PREPARE_GREETING_FOR_JOBS',
     jobs: actionPayload,
-    autoSend: Boolean(state.settings.autoSendGreeting)
+    autoSend: false
   });
 
   if (!applyResult?.ok) {
@@ -249,9 +367,9 @@ async function scanAndPrepareGreeting() {
   await updateQueueWithActions(applyResult.actions || []);
 
   const doneCount = (applyResult.actions || [])
-    .filter(action => action.status === 'GREETING_FILLED' || action.status === 'GREETING_SENT')
+    .filter(action => action.status === 'BOSS_GREETING_TRIGGERED' || action.status === 'GREETING_SENT')
     .length;
-  const suffix = state.settings.autoSendGreeting ? '已自动点击发送' : '最终发送需人工确认';
+  const suffix = '仅点击 BOSS 沟通/打招呼按钮';
   await appendLog(`打招呼流程完成：${doneCount}/${recommended.length} 个，${suffix}`);
 
   return getState();
@@ -383,6 +501,7 @@ async function updateQueueWithActions(actions) {
   const state = await getState();
   const queue = [...state.queue];
   const statusMap = {
+    BOSS_GREETING_TRIGGERED: 'PENDING_SECOND',
     GREETING_FILLED: 'PENDING_SEND_CONFIRM',
     GREETING_SENT: 'PENDING_SECOND',
     COMMUNICATE_OPENED_NO_INPUT: 'NEED_MANUAL_INPUT',
@@ -416,6 +535,12 @@ function getRecommendedResults(state) {
 }
 
 function splitLines(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map(item => String(item || '').trim())
+      .filter(Boolean);
+  }
+
   return String(value || '')
     .split(/[\n,，、]/)
     .map(item => item.trim())
@@ -441,6 +566,10 @@ async function savePageState(pageState) {
   });
 }
 
+async function setResumeCapture(resumeCapture) {
+  await chrome.storage.local.set({ [STORAGE_KEYS.resumeCapture]: resumeCapture });
+}
+
 async function appendLog(message) {
   const stored = await chrome.storage.local.get(STORAGE_KEYS.logs);
   const logs = stored[STORAGE_KEYS.logs] || [];
@@ -459,6 +588,19 @@ async function getActiveTab() {
 
 function sendTabMessage(tabId, message) {
   return chrome.tabs.sendMessage(tabId, message);
+}
+
+async function renderJobScoreOnCard(tabId, result) {
+  if (!tabId || !result) return;
+
+  try {
+    await sendTabMessage(tabId, {
+      type: 'HIFLOW_RENDER_JOB_SCORE',
+      result
+    });
+  } catch (error) {
+    await appendLog(`岗位卡片分数渲染失败: ${error.message || error}`);
+  }
 }
 
 async function readErrorMessage(response) {

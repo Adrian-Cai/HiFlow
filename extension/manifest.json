@@ -41,6 +41,16 @@
         "content/floating-panel.js"
       ],
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://www.zhipin.com/web/geek/resume*"
+      ],
+      "js": [
+        "content/resume.js",
+        "content/floating-panel.js"
+      ],
+      "run_at": "document_idle"
     }
   ],
   "web_accessible_resources": [

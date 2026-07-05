@@ -13,6 +13,8 @@
   const shadow = host.attachShadow({ mode: 'open' });
   let els = {};
   let isCollapsed = false;
+  let currentPageType = '';
+  let activeTab = 'match';
 
   init().catch(error => {
     console.warn('[HiFlow] floating panel failed:', error);
@@ -30,113 +32,153 @@
         <aside class="hiflow-panel" aria-label="HiFlow 悬浮面板">
           <main class="hiflow-app">
             <header class="hiflow-topbar">
-              <div>
+              <div class="hiflow-brand">
+                <span class="hiflow-logo" aria-hidden="true">Hi</span>
                 <h1 class="hiflow-title">HiFlow</h1>
-                <p id="page-state" class="hiflow-subtitle">等待页面状态</p>
               </div>
               <div class="hiflow-header-actions">
-                <span id="service-pill" class="hiflow-pill">未连接</span>
-                <button id="collapse-panel" class="hiflow-button hiflow-icon-button" type="button" title="收起面板" aria-label="收起面板">×</button>
+                <span id="service-pill" class="hiflow-service-pill" role="status" aria-live="polite">
+                  <span class="hiflow-service-dot" aria-hidden="true"></span>
+                  <span>本地服务</span>
+                  <b>未连接</b>
+                </span>
+                <button id="collapse-panel" class="hiflow-icon-button" type="button" title="收起面板" aria-label="收起面板">
+                  ${icon('x')}
+                </button>
               </div>
             </header>
 
-            <section class="hiflow-section" aria-labelledby="settings-title">
-              <h2 id="settings-title" class="hiflow-section-title">配置</h2>
-              <div class="hiflow-field">
-                <label for="resume-id">简历 ID</label>
-                <input id="resume-id" class="hiflow-input" type="text" autocomplete="off" />
-              </div>
-              <div class="hiflow-field">
-                <label for="threshold">阈值</label>
-                <input id="threshold" class="hiflow-input" type="number" min="0" max="100" step="1" />
-              </div>
-              <div class="hiflow-field">
-                <label for="scan-limit">每批扫描数量</label>
-                <input id="scan-limit" class="hiflow-input" type="number" min="1" max="20" step="1" />
-              </div>
-              <div class="hiflow-field">
-                <label for="service-url">本地服务</label>
-                <input id="service-url" class="hiflow-input" type="url" autocomplete="off" />
-              </div>
-              <label class="hiflow-check-row" for="auto-send">
-                <input id="auto-send" type="checkbox" />
-                <span>自动点击发送</span>
+            <section class="hiflow-control-strip hiflow-control-strip-compact" aria-label="匹配配置">
+              <label class="hiflow-control-pill" for="resume-id">
+                <span>简历</span>
+                <input id="resume-id" class="hiflow-inline-input" type="text" autocomplete="off" />
+                <span class="hiflow-verified" aria-hidden="true">${icon('check-mini')}</span>
               </label>
-              <button id="save-settings" class="hiflow-button" type="button">保存配置</button>
+              <label class="hiflow-control-pill hiflow-number-pill" for="threshold">
+                <span class="hiflow-pill-icon" aria-hidden="true">${icon('target')}</span>
+                <span>阈值</span>
+                <input id="threshold" class="hiflow-inline-input" type="number" min="0" max="100" step="1" />
+              </label>
             </section>
 
-            <section class="hiflow-section" aria-labelledby="resume-title">
-              <div class="hiflow-section-head">
-                <h2 id="resume-title" class="hiflow-section-title">我的简历画像</h2>
-                <button id="load-resumes" class="hiflow-button secondary" type="button">读取</button>
-              </div>
-              <div class="hiflow-field">
-                <label for="resume-name">名称</label>
-                <input id="resume-name" class="hiflow-input" type="text" autocomplete="off" />
-              </div>
-              <div class="hiflow-field">
-                <label for="resume-summary">简历摘要</label>
-                <textarea id="resume-summary" class="hiflow-input hiflow-textarea" rows="5"></textarea>
-              </div>
-              <div class="hiflow-field">
-                <label for="target-titles">目标岗位</label>
-                <textarea id="target-titles" class="hiflow-input hiflow-textarea" rows="3"></textarea>
-              </div>
-              <div class="hiflow-field">
-                <label for="resume-skills">技能关键词</label>
-                <textarea id="resume-skills" class="hiflow-input hiflow-textarea" rows="5"></textarea>
-              </div>
-              <div class="hiflow-field">
-                <label for="exclude-keywords">排除词</label>
-                <textarea id="exclude-keywords" class="hiflow-input hiflow-textarea" rows="3"></textarea>
-              </div>
-              <button id="save-resume" class="hiflow-button" type="button">保存简历画像</button>
-            </section>
+            <nav class="hiflow-nav hiflow-nav-compact" role="tablist" aria-label="HiFlow 导航">
+              <button id="tab-match" class="hiflow-nav-item is-active" type="button" role="tab" aria-selected="true" aria-controls="panel-match" data-tab="match">
+                ${icon('home')}<span>匹配</span>
+              </button>
+              <button id="tab-resume" class="hiflow-nav-item" type="button" role="tab" aria-selected="false" aria-controls="panel-resume" data-tab="resume">
+                ${icon('file')}<span>简历</span>
+              </button>
+              <button id="tab-settings" class="hiflow-nav-item" type="button" role="tab" aria-selected="false" aria-controls="panel-settings" data-tab="settings">
+                ${icon('settings')}<span>设置</span>
+              </button>
+              <button id="tab-logs" class="hiflow-nav-item" type="button" role="tab" aria-selected="false" aria-controls="panel-logs" data-tab="logs">
+                ${icon('list')}<span>日志</span>
+              </button>
+            </nav>
 
-            <section class="hiflow-section hiflow-action-grid" aria-label="岗位操作">
-              <button id="analyze-current" class="hiflow-button" type="button">分析当前岗位</button>
-              <button id="scan-visible" class="hiflow-button" type="button">扫描当前批次</button>
-              <button id="scan-prepare" class="hiflow-button" type="button">扫描并准备打招呼</button>
-              <button id="add-current" class="hiflow-button" type="button">加入当前岗位</button>
-              <button id="add-scan" class="hiflow-button" type="button">加入推荐岗位</button>
-              <button id="refresh-chat" class="hiflow-button" type="button">刷新 Chat 状态</button>
-              <button id="clear-logs" class="hiflow-button secondary" type="button">清空日志</button>
-            </section>
+            <div id="panel-match" class="hiflow-tab-panel is-active" role="tabpanel" aria-labelledby="tab-match" data-tab-panel="match">
+              <section id="overview" class="hiflow-match-card" aria-labelledby="current-title">
+                <div class="hiflow-match-head">
+                  <div>
+                    <p class="hiflow-eyebrow">当前岗位匹配</p>
+                    <h2 id="current-title" class="hiflow-job-title">等待岗位</h2>
+                  </div>
+                  <div class="hiflow-person-line">
+                    <span id="page-state">等待页面状态</span>
+                    <span id="current-location">--</span>
+                  </div>
+                </div>
+                <div id="current-result" class="hiflow-current-body" role="status">暂无匹配结果</div>
+              </section>
 
-            <section class="hiflow-section" aria-labelledby="current-title">
-              <h2 id="current-title" class="hiflow-section-title">当前匹配</h2>
-              <div id="current-result" class="hiflow-empty" role="status">暂无匹配结果</div>
-            </section>
+              <section id="actions" class="hiflow-action-grid hiflow-action-grid-compact" aria-label="当前岗位操作">
+                ${actionButton('capture-resume-primary', 'file', '获取简历信息')}
+                ${actionButton('analyze-current', 'bar-chart', '分析当前岗位')}
+                ${actionButton('prepare-current', 'message', '匹配高则点沟通')}
+              </section>
+            </div>
 
-            <section class="hiflow-section" aria-labelledby="scan-title">
-              <div class="hiflow-section-head">
-                <h2 id="scan-title" class="hiflow-section-title">扫描结果</h2>
-                <span id="scan-count" class="hiflow-count">0</span>
-              </div>
-              <ol id="scan-results" class="hiflow-list"></ol>
-            </section>
+            <div id="panel-resume" class="hiflow-tab-panel" role="tabpanel" aria-labelledby="tab-resume" data-tab-panel="resume" hidden>
+              <details id="resume-details" class="hiflow-accordion" open>
+                <summary>
+                  <span>简历画像</span>
+                  <span id="resume-capture-pill" class="hiflow-count">未识别</span>
+                </summary>
+                <section class="hiflow-accordion-body" aria-labelledby="resume-title">
+                  <div class="hiflow-section-head">
+                    <h2 id="resume-title" class="hiflow-section-title">我的简历画像</h2>
+                    <button id="load-resumes" class="hiflow-button secondary" type="button">读取</button>
+                  </div>
+                  <div class="hiflow-field">
+                    <label for="resume-name">名称</label>
+                    <input id="resume-name" class="hiflow-input" type="text" autocomplete="off" />
+                  </div>
+                  <div class="hiflow-field">
+                    <label for="resume-summary">简历摘要</label>
+                    <textarea id="resume-summary" class="hiflow-input hiflow-textarea" rows="5"></textarea>
+                  </div>
+                  <div class="hiflow-field">
+                    <label for="target-titles">目标岗位</label>
+                    <textarea id="target-titles" class="hiflow-input hiflow-textarea" rows="3"></textarea>
+                  </div>
+                  <div class="hiflow-field">
+                    <label for="resume-skills">技能关键词</label>
+                    <textarea id="resume-skills" class="hiflow-input hiflow-textarea" rows="5"></textarea>
+                  </div>
+                  <div class="hiflow-field">
+                    <label for="exclude-keywords">排除词</label>
+                    <textarea id="exclude-keywords" class="hiflow-input hiflow-textarea" rows="3"></textarea>
+                  </div>
+                  <div class="hiflow-split-actions">
+                    <button id="save-resume" class="hiflow-button" type="button">保存简历画像</button>
+                    <button id="open-resume-page" class="hiflow-button secondary" type="button">打开简历页</button>
+                    <button id="capture-resume" class="hiflow-button secondary" type="button">识别并保存</button>
+                  </div>
+                  <div id="resume-capture-status" class="hiflow-empty" role="status">暂无简历页数据</div>
+                </section>
+              </details>
+            </div>
 
-            <section class="hiflow-section" aria-labelledby="queue-title">
-              <div class="hiflow-section-head">
-                <h2 id="queue-title" class="hiflow-section-title">投递队列</h2>
-                <span id="queue-count" class="hiflow-count">0</span>
-              </div>
-              <ol id="queue-list" class="hiflow-list"></ol>
-            </section>
+            <div id="panel-settings" class="hiflow-tab-panel" role="tabpanel" aria-labelledby="tab-settings" data-tab-panel="settings" hidden>
+              <details id="settings-details" class="hiflow-accordion" open>
+                <summary>
+                  <span>配置</span>
+                  <span class="hiflow-count">已保存</span>
+                </summary>
+                <section class="hiflow-accordion-body" aria-labelledby="settings-title">
+                  <h2 id="settings-title" class="hiflow-section-title">运行配置</h2>
+                  <div class="hiflow-field">
+                    <label for="service-url">本地服务</label>
+                    <input id="service-url" class="hiflow-input" type="url" autocomplete="off" />
+                  </div>
+                  <div class="hiflow-note">匹配通过后仅点击 BOSS 的沟通/打招呼按钮，不填入话术，不点击发送。</div>
+                  <button id="save-settings" class="hiflow-button" type="button">保存配置</button>
+                </section>
+              </details>
+            </div>
 
-            <section class="hiflow-section" aria-labelledby="logs-title">
-              <div class="hiflow-section-head">
-                <h2 id="logs-title" class="hiflow-section-title">日志</h2>
-                <span id="log-count" class="hiflow-count">0</span>
-              </div>
-              <ol id="logs" class="hiflow-log-list"></ol>
-            </section>
+            <div id="panel-logs" class="hiflow-tab-panel" role="tabpanel" aria-labelledby="tab-logs" data-tab-panel="logs" hidden>
+              <details id="logs-details" class="hiflow-accordion hiflow-log-accordion" open>
+                <summary>
+                  <span>日志</span>
+                  <span id="log-count" class="hiflow-count">0</span>
+                </summary>
+                <section class="hiflow-accordion-body" aria-labelledby="logs-title">
+                  <div class="hiflow-section-head">
+                    <h2 id="logs-title" class="hiflow-section-title">运行日志</h2>
+                    <button id="clear-logs" class="hiflow-button secondary" type="button">清空</button>
+                  </div>
+                  <ol id="logs" class="hiflow-log-list"></ol>
+                </section>
+              </details>
+            </div>
           </main>
         </aside>
       </div>
     `;
 
     collectElements();
+    setActiveTab(activeTab);
     bindEvents();
     await restorePanelState();
     await refresh();
@@ -151,21 +193,24 @@
       console.warn('[HiFlow] CSS load failed:', error);
     }
 
-    return ':host{all:initial}.hiflow-shell{position:fixed;right:16px;top:76px;z-index:2147483647}.hiflow-panel{background:#fff;border:1px solid #ddd}.hiflow-app{padding:12px}';
+    return ':host{all:initial}.hiflow-shell{position:fixed;right:16px;top:32px;z-index:2147483647}.hiflow-panel{background:#fff;border:1px solid #ddd}.hiflow-app{padding:12px}';
   }
 
   function collectElements() {
     els = {
       shell: shadow.querySelector('[data-hiflow-shell]'),
+      app: shadow.querySelector('.hiflow-app'),
       toggle: shadow.querySelector('#hiflow-toggle'),
       collapsePanel: shadow.querySelector('#collapse-panel'),
+      navItems: Array.from(shadow.querySelectorAll('.hiflow-nav-item')),
+      tabPanels: Array.from(shadow.querySelectorAll('[data-tab-panel]')),
       pageState: shadow.querySelector('#page-state'),
       servicePill: shadow.querySelector('#service-pill'),
+      currentLocation: shadow.querySelector('#current-location'),
+      currentTitle: shadow.querySelector('#current-title'),
       resumeId: shadow.querySelector('#resume-id'),
       threshold: shadow.querySelector('#threshold'),
-      scanLimit: shadow.querySelector('#scan-limit'),
       serviceUrl: shadow.querySelector('#service-url'),
-      autoSend: shadow.querySelector('#auto-send'),
       saveSettings: shadow.querySelector('#save-settings'),
       loadResumes: shadow.querySelector('#load-resumes'),
       resumeName: shadow.querySelector('#resume-name'),
@@ -174,19 +219,16 @@
       resumeSkills: shadow.querySelector('#resume-skills'),
       excludeKeywords: shadow.querySelector('#exclude-keywords'),
       saveResume: shadow.querySelector('#save-resume'),
+      openResumePage: shadow.querySelector('#open-resume-page'),
+      captureResume: shadow.querySelector('#capture-resume'),
+      captureResumePrimary: shadow.querySelector('#capture-resume-primary'),
+      resumeCapturePill: shadow.querySelector('#resume-capture-pill'),
+      resumeCaptureStatus: shadow.querySelector('#resume-capture-status'),
       analyzeCurrent: shadow.querySelector('#analyze-current'),
-      scanVisible: shadow.querySelector('#scan-visible'),
-      scanPrepare: shadow.querySelector('#scan-prepare'),
-      addCurrent: shadow.querySelector('#add-current'),
-      addScan: shadow.querySelector('#add-scan'),
-      refreshChat: shadow.querySelector('#refresh-chat'),
-      clearLogs: shadow.querySelector('#clear-logs'),
+      prepareCurrent: shadow.querySelector('#prepare-current'),
       currentResult: shadow.querySelector('#current-result'),
-      scanCount: shadow.querySelector('#scan-count'),
-      scanResults: shadow.querySelector('#scan-results'),
-      queueCount: shadow.querySelector('#queue-count'),
-      queueList: shadow.querySelector('#queue-list'),
       logCount: shadow.querySelector('#log-count'),
+      clearLogs: shadow.querySelector('#clear-logs'),
       logs: shadow.querySelector('#logs')
     };
   }
@@ -195,12 +237,15 @@
     els.toggle.addEventListener('click', () => setCollapsed(!isCollapsed, true));
     els.collapsePanel.addEventListener('click', () => setCollapsed(true, true));
 
+    els.navItems.forEach(button => {
+      button.addEventListener('click', () => setActiveTab(button.dataset.tab));
+    });
+
     els.saveSettings.addEventListener('click', () => runAction(els.saveSettings, 'HIFLOW_UPDATE_SETTINGS', {
       localServiceUrl: els.serviceUrl.value.trim(),
       selectedResumeId: els.resumeId.value.trim(),
       threshold: Number(els.threshold.value || 90),
-      scanLimit: Number(els.scanLimit.value || 8),
-      autoSendGreeting: els.autoSend.checked
+      autoSendGreeting: false
     }));
 
     els.loadResumes.addEventListener('click', () => runAction(els.loadResumes, 'HIFLOW_REFRESH_RESUMES'));
@@ -212,12 +257,14 @@
       skills: els.resumeSkills.value.trim(),
       excludeKeywords: els.excludeKeywords.value.trim()
     }));
+    els.openResumePage.addEventListener('click', () => runAction(els.openResumePage, 'HIFLOW_OPEN_RESUME_PAGE'));
+    els.captureResume.addEventListener('click', () => runAction(els.captureResume, 'HIFLOW_CAPTURE_RESUME_PROFILE'));
+    els.captureResumePrimary.addEventListener('click', () => {
+      const type = currentPageType === 'resume' ? 'HIFLOW_CAPTURE_RESUME_PROFILE' : 'HIFLOW_OPEN_RESUME_PAGE';
+      runAction(els.captureResumePrimary, type);
+    });
     els.analyzeCurrent.addEventListener('click', () => runAction(els.analyzeCurrent, 'HIFLOW_ANALYZE_CURRENT'));
-    els.scanVisible.addEventListener('click', () => runAction(els.scanVisible, 'HIFLOW_SCAN_VISIBLE'));
-    els.scanPrepare.addEventListener('click', () => runAction(els.scanPrepare, 'HIFLOW_SCAN_AND_PREPARE_GREETING'));
-    els.addCurrent.addEventListener('click', () => runAction(els.addCurrent, 'HIFLOW_ADD_CURRENT_TO_QUEUE'));
-    els.addScan.addEventListener('click', () => runAction(els.addScan, 'HIFLOW_ADD_SCAN_RECOMMENDED'));
-    els.refreshChat.addEventListener('click', () => runAction(els.refreshChat, 'HIFLOW_REFRESH_CHAT'));
+    els.prepareCurrent.addEventListener('click', () => runAction(els.prepareCurrent, 'HIFLOW_ANALYZE_AND_PREPARE_CURRENT'));
     els.clearLogs.addEventListener('click', () => runAction(els.clearLogs, 'HIFLOW_CLEAR_LOGS'));
 
     chrome.storage.onChanged.addListener((changes, areaName) => {
@@ -233,6 +280,30 @@
       sendResponse({ ok: true, collapsed: isCollapsed });
       return false;
     });
+  }
+
+  function setActiveTab(nextTab) {
+    if (!nextTab) return;
+    activeTab = nextTab;
+
+    els.navItems.forEach(item => {
+      const isActive = item.dataset.tab === activeTab;
+      item.classList.toggle('is-active', isActive);
+      item.setAttribute('aria-selected', String(isActive));
+    });
+
+    els.tabPanels.forEach(panel => {
+      const isActive = panel.dataset.tabPanel === activeTab;
+      panel.hidden = !isActive;
+      panel.classList.toggle('is-active', isActive);
+      if (isActive) {
+        panel.querySelectorAll('details').forEach(details => {
+          details.open = true;
+        });
+      }
+    });
+
+    if (els.app) els.app.scrollTop = 0;
   }
 
   async function restorePanelState() {
@@ -287,16 +358,13 @@
     const settings = state.settings || {};
     els.resumeId.value = settings.selectedResumeId || '';
     els.threshold.value = Number(settings.threshold || 90);
-    els.scanLimit.value = Number(settings.scanLimit || 8);
     els.serviceUrl.value = settings.localServiceUrl || '';
-    els.autoSend.checked = Boolean(settings.autoSendGreeting);
 
     renderResumeEditor(state.resumes || [], settings.selectedResumeId);
+    renderResumeCapture(state.resumeCapture);
     renderServicePill(state);
     renderPageState(state.pageState);
-    renderCurrent(state.currentResult);
-    renderScanResults(state.scanResults || []);
-    renderQueue(state.queue || []);
+    renderCurrent(state.currentResult, state.pageState);
     renderLogs(state.logs || []);
   }
 
@@ -314,11 +382,49 @@
     els.excludeKeywords.value = (selected.exclude_keywords || selected.excludeKeywords || []).join('\n');
   }
 
+  function renderResumeCapture(capture) {
+    if (!capture) {
+      els.resumeCapturePill.textContent = '未识别';
+      els.resumeCaptureStatus.className = 'hiflow-empty';
+      els.resumeCaptureStatus.textContent = '暂无简历页数据';
+      return;
+    }
+
+    const statusText = ({
+      OPENING: '已打开',
+      NEEDS_RESUME_PAGE: '待进入',
+      EMPTY: '未识别',
+      SAVE_FAILED: '保存失败',
+      SAVED: '已保存'
+    })[capture.status] || '处理中';
+
+    els.resumeCapturePill.textContent = statusText;
+    els.resumeCaptureStatus.className = 'hiflow-empty';
+
+    if (capture.status === 'SAVED') {
+      const titles = Array.isArray(capture.targetTitles) && capture.targetTitles.length
+        ? `目标：${capture.targetTitles.slice(0, 3).join('、')}`
+        : '目标：未识别';
+      els.resumeCaptureStatus.innerHTML = `
+        <div class="hiflow-item-title">${escapeHtml(capture.name || 'BOSS 在线简历')}</div>
+        <div class="hiflow-meta">${escapeHtml(titles)}</div>
+        <div class="hiflow-meta">${escapeHtml(`技能 ${Number(capture.skillsCount || 0)} 个 / 摘要 ${Number(capture.summaryLength || 0)} 字`)}</div>
+      `;
+      return;
+    }
+
+    els.resumeCaptureStatus.textContent = capture.message || '暂无简历页数据';
+  }
+
   function renderServicePill(state) {
     const logs = state.logs || [];
     const hasServiceError = logs.some(log => /匹配服务|fetch|Failed|返回/.test(log.message || ''));
-    els.servicePill.textContent = hasServiceError ? '需检查' : '就绪';
-    els.servicePill.className = `hiflow-pill ${hasServiceError ? 'bad' : 'ok'}`;
+    els.servicePill.className = `hiflow-service-pill ${hasServiceError ? 'bad' : 'ok'}`;
+    els.servicePill.innerHTML = `
+      <span class="hiflow-service-dot" aria-hidden="true"></span>
+      <span>本地服务</span>
+      <b>${hasServiceError ? '需检查' : '运行中'}</b>
+    `;
   }
 
   function renderPageState(pageState) {
@@ -328,63 +434,59 @@
     }
 
     const page = pageState.page || (pageState.contact ? 'chat' : 'jobs');
-    els.pageState.textContent = page === 'chat'
-      ? `Chat: ${pageState.contact || pageState.title || '当前会话'}`
-      : `Jobs: ${pageState.title || 'BOSS 岗位页'}`;
+    currentPageType = page;
+    if (page === 'chat') {
+      els.pageState.textContent = `${pageState.contact || pageState.title || '当前会话'} · 在线`;
+      return;
+    }
+    if (page === 'resume') {
+      els.pageState.textContent = pageState.title || 'BOSS 简历页';
+      return;
+    }
+
+    els.pageState.textContent = pageState.title || 'BOSS 岗位页';
   }
 
-  function renderCurrent(result) {
+  function renderCurrent(result, pageState) {
     if (!result) {
-      els.currentResult.className = 'hiflow-empty';
+      els.currentTitle.textContent = '等待岗位';
+      els.currentLocation.textContent = '--';
+      els.currentResult.className = 'hiflow-current-body hiflow-empty-state';
       els.currentResult.textContent = '暂无匹配结果';
       return;
     }
 
-    els.currentResult.className = '';
     const job = result.jobMeta || {};
-    const decisionClass = result.decision === 'RECOMMEND' ? 'ok' : 'bad';
+    const score = Number(result.score || 0);
+    const matched = normalizePoints(result.matchedPoints);
+    const missing = normalizePoints(result.missingPoints);
+    const risks = normalizePoints(result.riskPoints);
+
+    els.currentTitle.textContent = job.title || '未识别岗位';
+    els.currentLocation.textContent = job.location || pageState?.location || '--';
+    els.currentResult.className = 'hiflow-current-body';
     els.currentResult.innerHTML = `
-      <div class="hiflow-score-row">
-        <div>
-          <div class="hiflow-item-title">${escapeHtml(job.title || '未识别岗位')}</div>
-          <div class="hiflow-meta">${escapeHtml([job.company, job.salary, job.location].filter(Boolean).join(' / ') || '无岗位信息')}</div>
-        </div>
-        <div class="hiflow-score">${Number(result.score || 0)}%</div>
+      <div class="hiflow-current-copy">
+        <h3>${escapeHtml(job.company || '未识别公司')}</h3>
+        <p>${escapeHtml(formatJobMeta(job))}</p>
+        <p>${escapeHtml(formatSkills(matched))}</p>
       </div>
-      <div class="hiflow-decision ${decisionClass}">${result.decision === 'RECOMMEND' ? '推荐沟通' : '暂不推荐'}</div>
-      <div class="hiflow-points">
-        ${renderPointLine('匹配', result.matchedPoints)}
-        ${renderPointLine('缺口', result.missingPoints)}
-        ${renderPointLine('风险', result.riskPoints)}
+      <div class="hiflow-score-block">
+        <strong>${score}%</strong>
+        <span>${result.decision === 'RECOMMEND' ? '可打招呼' : '暂不建议'}</span>
+      </div>
+      ${renderScoreBreakdown(result.detail)}
+      <div class="hiflow-metric-row">
+        ${metricCard('check', '匹配', matched.length ? String(matched.length) : '暂无', 'ok')}
+        ${metricCard('alert', '缺口', missing.length ? String(missing.length) : '暂无', 'warn')}
+        ${metricCard('shield', '风险', risks.length ? String(risks.length) : '暂无', 'ok')}
+      </div>
+      <div class="hiflow-point-grid">
+        ${pointPanel('匹配明细', matched, '暂无匹配明细')}
+        ${pointPanel('缺口明细', missing, '暂无明显缺口')}
+        ${pointPanel('风险明细', risks, '暂无明显风险')}
       </div>
     `;
-  }
-
-  function renderScanResults(results) {
-    els.scanCount.textContent = String(results.length);
-    els.scanResults.innerHTML = results.length
-      ? results.map(renderResultItem).join('')
-      : '<li class="hiflow-empty">暂无扫描结果</li>';
-  }
-
-  function renderQueue(queue) {
-    els.queueCount.textContent = String(queue.length);
-    els.queueList.innerHTML = queue.length
-      ? queue.map(item => {
-        const job = item.jobMeta || {};
-        return `
-          <li class="hiflow-item">
-            <div class="hiflow-item-line">
-              <span class="hiflow-item-title">${escapeHtml(job.title || '未识别岗位')}</span>
-              <span class="hiflow-count">${Number(item.score || 0)}%</span>
-            </div>
-            <div class="hiflow-meta">${escapeHtml([job.company, job.salary, job.location].filter(Boolean).join(' / ') || '无岗位信息')}</div>
-            <div class="hiflow-meta">${escapeHtml(formatQueueStatus(item.status || 'PENDING_APPLY'))}</div>
-            ${item.lastActionMessage ? `<div class="hiflow-meta">${escapeHtml(item.lastActionMessage)}</div>` : ''}
-          </li>
-        `;
-      }).join('')
-      : '<li class="hiflow-empty">暂无投递队列</li>';
   }
 
   function renderLogs(logs) {
@@ -399,30 +501,88 @@
       : '<li class="hiflow-empty">暂无日志</li>';
   }
 
-  function renderResultItem(result) {
-    const job = result.jobMeta || {};
-    const decisionClass = result.decision === 'RECOMMEND' ? 'ok' : 'bad';
+  function metricCard(iconName, label, value, tone) {
     return `
-      <li class="hiflow-item">
-        <div class="hiflow-item-line">
-          <span class="hiflow-item-title">${escapeHtml(job.title || '未识别岗位')}</span>
-          <span class="hiflow-count">${Number(result.score || 0)}%</span>
+      <div class="hiflow-metric ${tone}">
+        <span aria-hidden="true">${icon(iconName)}</span>
+        <div>
+          <small>${label}</small>
+          <strong>${value}</strong>
         </div>
-        <div class="hiflow-meta">${escapeHtml([job.company, job.salary, job.location].filter(Boolean).join(' / ') || '无岗位信息')}</div>
-        <div class="hiflow-decision ${decisionClass}">${result.decision === 'RECOMMEND' ? '推荐沟通' : '暂不推荐'}</div>
-      </li>
+      </div>
     `;
   }
 
-  function renderPointLine(label, points = []) {
-    const text = Array.isArray(points) && points.length ? points.slice(0, 3).join('、') : '暂无';
-    return `<div><b>${label}：</b>${escapeHtml(text)}</div>`;
+  function renderScoreBreakdown(detail = {}) {
+    const rows = [
+      ['硬性条件', detail.hardScore, '排除词、强约束'],
+      ['岗位方向', detail.titleScore, '目标岗位命中'],
+      ['技能覆盖', detail.skillScore, '简历技能与 JD 交集'],
+      ['排除项', detail.conditionScore, '未命中排除词'],
+      ['规则语义', detail.llmScore, '本地规则补充分']
+    ].filter(([, value]) => value !== undefined && value !== null);
+
+    if (!rows.length) return '';
+
+    return `
+      <section class="hiflow-score-detail" aria-label="评分依据">
+        <div class="hiflow-score-detail-head">
+          <span>评分依据</span>
+          <b>${escapeHtml(formatScoreSource(detail.source))}</b>
+        </div>
+        <p>综合分 = 硬性条件 28% + 岗位方向 22% + 技能覆盖 30% + 排除项 12% + 规则语义 8%</p>
+        <div class="hiflow-score-parts">
+          ${rows.map(([label, value, hint]) => `
+            <div>
+              <span>${escapeHtml(label)}</span>
+              <strong>${Number(value)}%</strong>
+              <small>${escapeHtml(hint)}</small>
+            </div>
+          `).join('')}
+        </div>
+      </section>
+    `;
+  }
+
+  function pointPanel(title, points, emptyText) {
+    const normalized = normalizePoints(points);
+    return `
+      <section class="hiflow-point-panel">
+        <h3>${escapeHtml(title)}</h3>
+        ${normalized.length
+          ? `<ul>${normalized.map(point => `<li>${escapeHtml(point)}</li>`).join('')}</ul>`
+          : `<p>${escapeHtml(emptyText || '暂无')}</p>`}
+      </section>
+    `;
+  }
+
+  function normalizePoints(points) {
+    return Array.isArray(points) ? points.filter(Boolean) : [];
+  }
+
+  function formatSkills(points) {
+    if (!points.length) return '技能：待分析';
+    return `技能：${points.slice(0, 3).join(' · ')}`;
+  }
+
+  function formatJobMeta(job) {
+    return [job.salary, job.location, job.experience, job.education]
+      .filter(Boolean)
+      .join(' · ');
+  }
+
+  function formatScoreSource(source) {
+    return source === 'local-rule-engine' ? '本地规则引擎' : (source || '本地匹配服务');
   }
 
   function renderError(message) {
-    els.servicePill.textContent = '异常';
-    els.servicePill.className = 'hiflow-pill bad';
-    els.currentResult.className = 'hiflow-empty';
+    els.servicePill.className = 'hiflow-service-pill bad';
+    els.servicePill.innerHTML = `
+      <span class="hiflow-service-dot" aria-hidden="true"></span>
+      <span>本地服务</span>
+      <b>异常</b>
+    `;
+    els.currentResult.className = 'hiflow-current-body hiflow-empty-state';
     els.currentResult.textContent = message || '操作失败';
   }
 
@@ -433,15 +593,31 @@
     return date.toLocaleString('zh-CN', { hour12: false });
   }
 
-  function formatQueueStatus(status) {
-    return ({
-      PENDING_APPLY: '待准备打招呼',
-      PENDING_SEND_CONFIRM: '已填入话术，待人工发送',
-      PENDING_SECOND: '已发送第一条，待第二轮跟进',
-      NEED_MANUAL_INPUT: '需手动补充话术',
-      NEED_MANUAL_SEND: '已填入话术，需手动发送',
-      APPLY_FAILED: '准备失败'
-    })[status] || status;
+  function actionButton(id, iconName, label) {
+    return `
+      <button id="${id}" class="hiflow-action-button" type="button">
+        <span aria-hidden="true">${icon(iconName)}</span>
+        <b>${label}</b>
+      </button>
+    `;
+  }
+
+  function icon(name) {
+    const icons = {
+      home: '<svg viewBox="0 0 24 24"><path d="M3 11.5 12 4l9 7.5"/><path d="M5 10.5V20h5v-5h4v5h5v-9.5"/></svg>',
+      file: '<svg viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/><path d="M8 13h8"/><path d="M8 17h5"/></svg>',
+      settings: '<svg viewBox="0 0 24 24"><path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5Z"/><path d="M19.4 15a1.8 1.8 0 0 0 .36 2l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.8 1.8 0 0 0-2-.36 1.8 1.8 0 0 0-1.1 1.65V21a2 2 0 1 1-4 0v-.09A1.8 1.8 0 0 0 8.7 19.3a1.8 1.8 0 0 0-2 .36l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.8 1.8 0 0 0 .36-2A1.8 1.8 0 0 0 2.6 13H2.5a2 2 0 1 1 0-4h.09A1.8 1.8 0 0 0 4.2 7.9a1.8 1.8 0 0 0-.36-2l-.06-.06A2 2 0 1 1 6.6 3l.06.06a1.8 1.8 0 0 0 2 .36A1.8 1.8 0 0 0 9.8 1.8V1.7a2 2 0 1 1 4 0v.09a1.8 1.8 0 0 0 1.1 1.65 1.8 1.8 0 0 0 2-.36l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.8 1.8 0 0 0-.36 2 1.8 1.8 0 0 0 1.65 1.1H21a2 2 0 1 1 0 4h-.09A1.8 1.8 0 0 0 19.4 15Z"/></svg>',
+      target: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/></svg>',
+      'bar-chart': '<svg viewBox="0 0 24 24"><path d="M4 19V5"/><path d="M20 19H4"/><path d="M8 16v-5"/><path d="M12 16V8"/><path d="M16 16v-3"/></svg>',
+      message: '<svg viewBox="0 0 24 24"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/><path d="M8 9h8"/><path d="M8 13h5"/></svg>',
+      list: '<svg viewBox="0 0 24 24"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg>',
+      check: '<svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg>',
+      'check-mini': '<svg viewBox="0 0 16 16"><path d="m12.5 5-5.2 5.2L4.5 7.4"/></svg>',
+      alert: '<svg viewBox="0 0 24 24"><path d="m12 3 10 18H2L12 3Z"/><path d="M12 9v5"/><path d="M12 17h.01"/></svg>',
+      shield: '<svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="M12 8v5"/><path d="M12 16h.01"/></svg>',
+      x: '<svg viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>'
+    };
+    return icons[name] || icons.home;
   }
 
   function escapeHtml(value) {
