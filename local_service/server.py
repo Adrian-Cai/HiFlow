@@ -69,6 +69,17 @@ DEFAULT_RESUME = {
         "主播",
         "外包驻场",
         "纯外包",
+        "人力派遣",
+        "硬件测试",
+        "嵌入式",
+        "固件",
+        "物联网",
+        "智能硬件",
+        "车载测试",
+        "车联网",
+        "汽车电子",
+        "智能座舱",
+        "自动驾驶",
         "996",
         "单休",
     ],
@@ -115,11 +126,31 @@ def clamp_score(value: float) -> int:
 
 
 def pick_resume(resume_id: str | None) -> dict[str, Any]:
+    requested_id = str(resume_id or "").strip()
+    if not requested_id:
+        raise ValueError("resume_id 不能为空")
     resumes = read_resumes()
     for resume in resumes:
-        if resume.get("id") == resume_id:
+        if resume.get("id") == requested_id:
             return resume
-    return resumes[0] if resumes else DEFAULT_RESUME
+    raise ValueError(f"未找到简历：{requested_id}")
+
+
+def effective_target_titles(resume: dict[str, Any]) -> list[str]:
+    """Recover conservative role titles when an old web import stored resume prose here."""
+    configured = [str(value).strip() for value in list(resume.get("target_titles") or []) if str(value).strip()]
+    role_markers = ("测试开发", "自动化测试", "测试工程师", "质量工程师")
+    role_titles = [
+        title
+        for title in configured
+        if len(title) <= 12 and any(marker in title for marker in role_markers)
+    ]
+    if role_titles:
+        return role_titles
+
+    searchable = " ".join(str(value) for value in list(resume.get("skills") or []))
+    inferred = [marker for marker in role_markers if marker in searchable]
+    return inferred or ["测试开发", "自动化测试", "测试工程师"]
 
 
 def score_match(payload: dict[str, Any]) -> dict[str, Any]:
@@ -134,7 +165,7 @@ def score_match(payload: dict[str, Any]) -> dict[str, Any]:
         jd_text[:400],
     ])
 
-    target_titles = list(resume.get("target_titles") or [])
+    target_titles = effective_target_titles(resume)
     skills = list(resume.get("skills") or [])
     excludes = list(resume.get("exclude_keywords") or [])
 
@@ -151,7 +182,7 @@ def score_match(payload: dict[str, Any]) -> dict[str, Any]:
         hard_score = 72
 
     title_score = 100 if matched_titles else 62
-    skill_score = 76 if not jd_required_skills else min(100, 58 + len(matched_skills) * 7)
+    skill_score = 45 if not jd_required_skills else min(100, 50 + len(matched_skills) * 8)
     condition_score = 100 if not hit_excludes else 25
     llm_stub_score = 82 if matched_titles else 66
 
@@ -163,7 +194,7 @@ def score_match(payload: dict[str, Any]) -> dict[str, Any]:
         llm_stub_score * 0.08
     )
 
-    decision = "RECOMMEND" if score >= 90 and not hit_excludes else "PASS"
+    decision = "RECOMMEND" if score >= 80 and not hit_excludes else "PASS"
     risk_points = build_risk_points(hit_excludes, matched_titles, missing_skills)
     matched_points = build_matched_points(matched_titles, matched_skills)
 

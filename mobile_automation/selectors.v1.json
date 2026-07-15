@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "appPackage": "com.hpbr.bosszhipin",
+  "appActivity": ".module.launcher.WelcomeActivity",
+  "maxScrolls": 5,
+  "jobCardLocators": [
+    {
+      "by": "id",
+      "value": "com.hpbr.bosszhipin:id/boss_job_card_view"
+    }
+  ],
+  "elementIds": {
+    "jobTab": "com.hpbr.bosszhipin:id/tv_tab_1",
+    "jobList": "com.hpbr.bosszhipin:id/rv_list",
+    "jobCard": "com.hpbr.bosszhipin:id/boss_job_card_view",
+    "cardTitle": "com.hpbr.bosszhipin:id/tv_position_name",
+    "cardCompany": "com.hpbr.bosszhipin:id/tv_company_name",
+    "cardSalary": "com.hpbr.bosszhipin:id/tv_salary_statue",
+    "cardLocation": "com.hpbr.bosszhipin:id/tv_distance",
+    "cardActivity": "com.hpbr.bosszhipin:id/tv_active_status",
+    "detailTitle": "com.hpbr.bosszhipin:id/tv_job_name",
+    "detailSalary": "com.hpbr.bosszhipin:id/tv_job_salary",
+    "detailLocation": "com.hpbr.bosszhipin:id/tv_required_location",
+    "detailBossTitle": "com.hpbr.bosszhipin:id/tv_boss_title",
+    "detailActivity": "com.hpbr.bosszhipin:id/boss_label_tv",
+    "detailDescription": "com.hpbr.bosszhipin:id/tv_description",
+    "communicateButton": "com.hpbr.bosszhipin:id/btn_chat"
+  },
+  "communicateTexts": ["立即沟通", "打招呼", "感兴趣"],
+  "continueTexts": ["继续沟通"],
+  "blockerTexts": [
+    "安全验证",
+    "完成验证",
+    "账号异常",
+    "登录/注册",
+    "短信验证码",
+    "人脸识别",
+    "沟通额度已用完",
+    "今日沟通已达上限"
+  ]
+}
