@@ -77,7 +77,24 @@ class ApplicationStore:
 
     def successful_count_on(self, local_date: date) -> int:
         target = local_date.isoformat()
-        return sum(1 for entry in self._entries() if entry.get("localDate") == target)
+        successful_fingerprints = {
+            str(entry.get("jobFingerprint") or "")
+            for entry in self._entries()
+            if entry.get("localDate") == target and entry.get("jobFingerprint")
+        }
+        for batch in BatchStore(self.root).list():
+            for candidate in batch.candidates:
+                if candidate.status != CandidateStatus.CONTACTED:
+                    continue
+                try:
+                    contacted_at = datetime.fromisoformat(candidate.updated_at)
+                except (TypeError, ValueError):
+                    continue
+                if contacted_at.tzinfo is None:
+                    contacted_at = contacted_at.replace(tzinfo=timezone.utc)
+                if contacted_at.astimezone(CHINA_TIMEZONE).date() == local_date:
+                    successful_fingerprints.add(candidate.job.fingerprint)
+        return len(successful_fingerprints)
 
     def contacted_fingerprints(self) -> set[str]:
         recorded = {

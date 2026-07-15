@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .activity import ActivityLevel, normalize_activity
 from .errors import AutomationError, UserActionRequired
@@ -200,9 +201,16 @@ def uiautomator_literal(value: str) -> str:
 
 
 class AppiumBossAdapter:
-    def __init__(self, config: AppiumConfig, server_url: str = "http://127.0.0.1:4723") -> None:
+    def __init__(
+        self,
+        config: AppiumConfig,
+        server_url: str = "http://127.0.0.1:4723",
+        *,
+        status_reporter: Callable[[str, str], None] | None = None,
+    ) -> None:
         self.config = config
         self.server_url = server_url
+        self._status_reporter = status_reporter or (lambda _category, _message: None)
         self.driver: Any | None = None
         self._by: Any | None = None
         self._current_job: Job | None = None
@@ -210,6 +218,7 @@ class AppiumBossAdapter:
         self._stream_seen_cards: set[str] = set()
         self._stream_pending: list[Job] = []
         self._stream_unchanged_scrolls = 0
+        self._stream_exhaustion_refreshed = False
 
     def __enter__(self) -> "AppiumBossAdapter":
         self.connect()
@@ -238,7 +247,23 @@ class AppiumBossAdapter:
         except Exception as error:
             raise AutomationError("APPIUM_SESSION_FAILED", "无法建立 Appium 真机会话") from error
         self._by = AppiumBy
-        self._assert_no_blocker()
+        try:
+            self._configure_driver_settings()
+            self._assert_no_blocker()
+        except (AutomationError, UserActionRequired):
+            self.close()
+            raise
+        except Exception as error:
+            self.close()
+            raise AutomationError(
+                "APPIUM_SESSION_CONFIG_FAILED",
+                "无法配置 Appium 页面读取服务，请重新启动任务",
+            ) from error
+
+    def _configure_driver_settings(self) -> None:
+        if self.driver is None:
+            raise AutomationError("APPIUM_NOT_CONNECTED", "Appium 会话尚未建立")
+        self.driver.update_settings({"enableNotificationListener": False})
 
     def _capabilities(self) -> dict[str, Any]:
         capabilities: dict[str, Any] = {
@@ -247,7 +272,7 @@ class AppiumBossAdapter:
             "deviceName": "Android",
             "appPackage": self.config.app_package,
             "noReset": True,
-            "forceAppLaunch": True,
+            "forceAppLaunch": False,
             "shouldTerminateApp": False,
             "autoGrantPermissions": False,
             "ignoreHiddenApiPolicyError": True,
@@ -300,15 +325,27 @@ class AppiumBossAdapter:
         return list(jobs.values())
 
     def next_job(self) -> Job | None:
+        try:
+            return self._next_job()
+        except (AutomationError, UserActionRequired):
+            raise
+        except Exception as error:
+            raise AutomationError(
+                "APPIUM_PAGE_READ_FAILED",
+                "读取岗位列表时 Appium 页面服务异常，任务已安全停止",
+            ) from error
+
+    def _next_job(self) -> Job | None:
         self._require_driver()
         if not self._stream_started:
             self._stream_started = True
             self._stream_seen_cards.clear()
             self._stream_pending.clear()
             self._stream_unchanged_scrolls = 0
+            self._stream_exhaustion_refreshed = False
             self._open_job_list()
         elif self._current_job is not None:
-            self._open_job_list()
+            self._return_to_job_list()
             self._current_job = None
 
         while True:
@@ -335,7 +372,13 @@ class AppiumBossAdapter:
             if self._stream_pending:
                 continue
             self._stream_unchanged_scrolls = self._stream_unchanged_scrolls + 1 if discovered == 0 else 0
-            if self._stream_unchanged_scrolls >= 2 or not self._scroll_down():
+            if self._stream_unchanged_scrolls >= 2:
+                if self._refresh_exhausted_list_once():
+                    continue
+                return None
+            if not self._scroll_down():
+                if self._refresh_exhausted_list_once():
+                    continue
                 return None
             time.sleep(0.8)
 
@@ -374,9 +417,14 @@ class AppiumBossAdapter:
             communicate = self._find_unique_text_element(self.config.communicate_texts)
             if communicate is not None:
                 communicate.click()
-                time.sleep(0.8)
-                self._assert_no_blocker()
-                return True
+                self._status_reporter("沟通", "已点击打招呼，正在等待平台确认")
+                if self._wait_for_contact_confirmation(timeout=10):
+                    self._status_reporter("沟通", "平台已确认沟通成功")
+                    return True
+                raise AutomationError(
+                    "CONTACT_NOT_CONFIRMED",
+                    "已点击打招呼，但平台未确认沟通成功，本次未计入成功数量",
+                )
             time.sleep(0.5)
             self._assert_no_blocker()
         raise AutomationError("COMMUNICATE_BUTTON_NOT_FOUND", "岗位详情页没有找到唯一的沟通按钮")
@@ -399,27 +447,99 @@ class AppiumBossAdapter:
             communicate = self._find_unique_text_element(self.config.communicate_texts)
             if communicate is not None:
                 communicate.click()
-                time.sleep(0.8)
-                self._assert_no_blocker()
-                return
+                self._status_reporter("沟通", "已点击打招呼，正在等待平台确认")
+                if self._wait_for_contact_confirmation(timeout=10):
+                    self._status_reporter("沟通", "平台已确认沟通成功")
+                    return
+                raise AutomationError(
+                    "CONTACT_NOT_CONFIRMED",
+                    "已点击打招呼，但平台未确认沟通成功，本次未计入成功数量",
+                )
         raise AutomationError("COMMUNICATE_BUTTON_NOT_FOUND", "岗位详情页没有找到唯一的沟通按钮")
 
-    def _open_job_list(self) -> None:
-        try:
-            tab = self._wait_unique_id(self.config.element_ids["jobTab"], timeout=10)
-        except AutomationError as error:
-            known_subpage = is_known_subpage_activity(self.driver.current_activity) or bool(
-                self.driver.find_elements(self._by.ID, self.config.element_ids["detailDescription"])
-            ) or bool(
-                self.driver.find_elements(self._by.ID, "com.hpbr.bosszhipin:id/editText_with_scrollbar")
+    def _wait_for_contact_confirmation(self, *, timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            self._assert_no_blocker()
+            if self._find_unique_text_element(self.config.continue_texts) is not None:
+                return True
+            if self._chat_page_visible():
+                return True
+            time.sleep(0.5)
+        return False
+
+    def _chat_page_visible(self) -> bool:
+        activity = str(self.driver.current_activity or "")
+        if activity.endswith(".chat.single.activity.ChatRoomActivity"):
+            return True
+        return bool(
+            self.driver.find_elements(
+                self._by.ID,
+                "com.hpbr.bosszhipin:id/editText_with_scrollbar",
             )
-            if error.code != "LOCATOR_NOT_FOUND" or not known_subpage:
-                raise
-            self.driver.back()
-            tab = self._wait_unique_id(self.config.element_ids["jobTab"], timeout=12)
+        )
+
+    def _open_job_list(self) -> None:
+        if self._job_list_visible():
+            self._assert_no_blocker()
+            return
+        if self._known_subpage_visible():
+            self._return_to_job_list()
+            return
+        tab = self._wait_unique_id(self.config.element_ids["jobTab"], timeout=10)
         tab.click()
         self._wait_unique_id(self.config.element_ids["jobList"], timeout=12)
         time.sleep(1)
+
+    def _return_to_job_list(self) -> None:
+        for _ in range(3):
+            if self._job_list_visible():
+                self._assert_no_blocker()
+                time.sleep(0.4)
+                return
+            if not self._known_subpage_visible():
+                raise AutomationError(
+                    "UNSAFE_BACK_NAVIGATION",
+                    "当前页面不是已知的岗位详情或沟通页面，未执行返回操作",
+                )
+            self._status_reporter("列表", "正在返回原岗位列表")
+            self.driver.back()
+            time.sleep(0.8)
+        if not self._job_list_visible():
+            raise AutomationError("JOB_LIST_NOT_RESTORED", "返回后没有恢复到原岗位列表")
+
+    def _refresh_exhausted_list_once(self) -> bool:
+        if self._stream_exhaustion_refreshed:
+            return False
+        self._refresh_job_list()
+        self._stream_exhaustion_refreshed = True
+        self._stream_unchanged_scrolls = 0
+        return True
+
+    def _refresh_job_list(self) -> None:
+        if not self._job_list_visible():
+            raise AutomationError("JOB_LIST_NOT_VISIBLE", "刷新前没有识别到岗位列表")
+        self._assert_no_blocker()
+        self._status_reporter("刷新", "当前列表已检查完，正在刷新一次查找新岗位")
+        tab = self._wait_unique_id(self.config.element_ids["jobTab"], timeout=10)
+        tab.click()
+        self._wait_unique_id(self.config.element_ids["jobList"], timeout=12)
+        time.sleep(2)
+
+    def _job_list_visible(self) -> bool:
+        matches = self._visible(
+            self.driver.find_elements(self._by.ID, self.config.element_ids["jobList"])
+        )
+        if len(matches) > 1:
+            raise AutomationError("LOCATOR_AMBIGUOUS", "岗位列表控件不唯一")
+        return len(matches) == 1
+
+    def _known_subpage_visible(self) -> bool:
+        return is_known_subpage_activity(self.driver.current_activity) or bool(
+            self.driver.find_elements(self._by.ID, self.config.element_ids["detailDescription"])
+        ) or bool(
+            self.driver.find_elements(self._by.ID, "com.hpbr.bosszhipin:id/editText_with_scrollbar")
+        )
 
     def _read_card_summary(self, element: Any) -> Job | None:
         title = self._child_text(element, "cardTitle")
@@ -579,17 +699,26 @@ class AppiumBossAdapter:
     def _scroll_down(self) -> bool:
         try:
             size = self.driver.get_window_size()
-            result = self.driver.execute_script(
-                "mobile: scrollGesture",
-                {
-                    "left": int(size["width"] * 0.08),
-                    "top": int(size["height"] * 0.20),
-                    "width": int(size["width"] * 0.84),
-                    "height": int(size["height"] * 0.62),
-                    "direction": "down",
-                    "percent": 0.70,
-                },
+            self._status_reporter("列表", "正在向下滚动查找新岗位")
+            center_x = int(size["width"] * 0.50)
+            start_y = int(size["height"] * 0.75)
+            end_y = int(size["height"] * 0.30)
+            subprocess.run(
+                [
+                    "adb",
+                    "shell",
+                    "input",
+                    "swipe",
+                    str(center_x),
+                    str(start_y),
+                    str(center_x),
+                    str(end_y),
+                    "500",
+                ],
+                capture_output=True,
+                check=True,
+                timeout=5,
             )
-            return bool(result)
+            return True
         except Exception as error:
             raise AutomationError("SCROLL_FAILED", "岗位列表滚动失败") from error

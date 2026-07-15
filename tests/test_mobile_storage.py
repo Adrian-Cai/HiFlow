@@ -1,10 +1,11 @@
 import tempfile
 import unittest
+from datetime import date, datetime
 from pathlib import Path
 
 from mobile_automation.activity import ActivityLevel
 from mobile_automation.models import Batch, BatchStatus, Candidate, CandidateStatus, Job, MatchResult
-from mobile_automation.storage import BatchStore
+from mobile_automation.storage import CHINA_TIMEZONE, ApplicationStore, BatchStore
 
 
 def sample_batch() -> Batch:
@@ -49,6 +50,39 @@ class BatchStoreTests(unittest.TestCase):
             store.save(failed)
 
             self.assertEqual(store.contacted_fingerprints(), {contacted.candidates[0].job.fingerprint})
+
+
+class ApplicationStoreTests(unittest.TestCase):
+    def test_daily_count_includes_contacted_candidates_from_legacy_batches(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            batch = sample_batch()
+            batch.candidates[0].status = CandidateStatus.CONTACTED
+            batch.candidates[0].updated_at = "2026-07-15T04:02:38+00:00"
+            BatchStore(root).save(batch)
+
+            count = ApplicationStore(root).successful_count_on(date(2026, 7, 15))
+
+            self.assertEqual(count, 1)
+
+    def test_daily_count_deduplicates_the_same_job_across_legacy_and_streaming_records(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            batch = sample_batch()
+            candidate = batch.candidates[0]
+            candidate.status = CandidateStatus.CONTACTED
+            candidate.updated_at = "2026-07-15T04:02:38+00:00"
+            BatchStore(root).save(batch)
+
+            store = ApplicationStore(root)
+            store.record_success(
+                "resume_001",
+                candidate.job,
+                candidate.match,
+                at=datetime(2026, 7, 15, 13, 0, tzinfo=CHINA_TIMEZONE),
+            )
+
+            self.assertEqual(store.successful_count_on(date(2026, 7, 15)), 1)
 
 
 if __name__ == "__main__":

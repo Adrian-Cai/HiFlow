@@ -13,6 +13,8 @@ class ActivityNormalizationTests(unittest.TestCase):
             "30分钟前活跃",
             "8分钟前回复",
             "1小时前回复",
+            "今日回复10+次",
+            "今日回复3次",
         ):
             with self.subTest(text=text):
                 self.assertEqual(normalize_activity(text), ActivityLevel.TODAY)

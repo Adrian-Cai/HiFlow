@@ -31,23 +31,13 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\mobile_automation\run.ps1 doctor
 ```
 
-启动本地匹配服务：
+手机端手动登录 Boss 直聘并进入目标城市的岗位列表后，一条命令启动匹配服务、Appium 和自动筛选：
 
 ```powershell
-python local_service\server.py
+.\mobile_automation\start.ps1
 ```
 
-另开终端启动 Appium：
-
-```powershell
-.\mobile_automation\start-appium.ps1
-```
-
-手机端手动登录 Boss 直聘并进入目标城市的岗位列表后运行：
-
-```powershell
-.\mobile_automation\run.ps1 auto --resume-id resume_001
-```
+终端只显示中文业务进度；Appium 等底层排障日志保存在 `mobile_automation/data/logs/`。只检查服务、不读取岗位也不打招呼时，运行 `.\mobile_automation\start.ps1 -CheckOnly`。
 
 默认要求岗位月薪下限不低于 15K、招聘者 3 日内活跃、匹配分不低于 90，并排除硬件、嵌入式、物联网和车载方向。每成功沟通 5 个岗位冷却 120 秒，按北京时间当日累计达到 150 个后停止。
 

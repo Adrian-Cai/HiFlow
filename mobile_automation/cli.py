@@ -4,6 +4,7 @@ import argparse
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from .appium_adapter import AppiumBossAdapter, AppiumConfig
@@ -13,12 +14,79 @@ from .matcher import MatchClient
 from .models import Batch, BatchStatus
 from .policy import JobPolicy
 from .storage import ApplicationStore, BatchStore
-from .workflow import apply_batch, run_streaming_applications, scan_and_create_batch
+from .workflow import ProgressEvent, apply_batch, run_streaming_applications, scan_and_create_batch
 
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 DEFAULT_DATA_DIR = PACKAGE_DIR / "data"
 DEFAULT_CONFIG = PACKAGE_DIR / "selectors.v1.json"
+
+
+_SKIP_REASON_TEXT = {
+    "SALARY_UNPARSABLE": "薪资格式无法可靠识别",
+    "SALARY_BELOW_MINIMUM": "薪资低于设定下限",
+    "RECRUITER_INACTIVE": "招聘者超过3天未活跃或活跃度未知",
+    "EXCLUDED_DOMAIN": "命中硬件、物联网、车载等禁投方向",
+    "ALREADY_CONTACTED": "本地记录显示已经沟通过",
+    "ALREADY_CONTACTED_ON_PLATFORM": "岗位页面显示继续沟通，未重复打招呼",
+    "MATCH_REJECTED": "匹配度或推荐条件未达到自动沟通线",
+}
+
+_FAILURE_HINT_TEXT = {
+    "APPIUM_SESSION_FAILED": "请确认手机已解锁并允许 USB 调试；建议改用一键启动脚本自动检查依赖服务。",
+    "MATCH_SERVICE_UNAVAILABLE": "本地匹配服务不可用；建议改用一键启动脚本自动启动服务。",
+    "SECURITY_VERIFICATION": "任务已暂停，进度已经保留；请在手机上完成验证后重新启动。",
+}
+
+
+def format_failure(code: str, message: str) -> str:
+    hint = _FAILURE_HINT_TEXT.get(code)
+    suffix = f"；处理建议：{hint}" if hint else ""
+    return f"[失败] {message}（错误码：{code}）{suffix}"
+
+
+def format_device_status(category: str, message: str) -> str:
+    return f"[{category}] {message}"
+
+
+def format_progress_event(event: ProgressEvent) -> str:
+    job_name = event.job.title if event.job else "当前岗位"
+    if event.code == "RUN_STARTED":
+        daily_total = int(event.daily_total or 0)
+        daily_limit = int(event.daily_limit or 0)
+        return (
+            f"[进度] 今日历史已沟通 {daily_total}/{daily_limit}，"
+            f"剩余 {max(0, daily_limit - daily_total)}"
+        )
+    if event.code == "JOB_READ" and event.job:
+        return f"[岗位] 正在检查岗位：{job_name}｜{event.job.company}｜{event.job.salary}｜{event.job.activity_text}"
+    if event.code == "JOB_SKIPPED":
+        reason = _SKIP_REASON_TEXT.get(event.reason, event.reason or "未满足筛选条件")
+        return f"[跳过] {job_name}｜原因：{reason}"
+    if event.code == "JOB_MATCHED":
+        return f"[匹配] {job_name}｜匹配度 {event.score}%"
+    if event.code == "JOB_CONTACTED":
+        return f"[沟通] 已成功打招呼：{job_name}｜今日累计 {event.daily_total}/{event.daily_limit}"
+    if event.code == "COOLDOWN_STARTED":
+        seconds = int(event.seconds or 0)
+        return f"[等待] 已完成一组沟通，暂停 {seconds} 秒后继续"
+    if event.code == "NEXT_JOB_REQUESTED":
+        return "[列表] 正在返回原岗位列表，继续查找下一个岗位"
+    if event.code == "RUN_STOPPED":
+        if event.reason == "DAILY_LIMIT_REACHED":
+            return f"[完成] 今日沟通已达到 {event.daily_total}/{event.daily_limit}，任务停止"
+        if event.reason == "NO_MORE_JOBS":
+            return f"[完成] 当前列表没有更多新岗位，今日累计 {event.daily_total}/{event.daily_limit}"
+        return f"[完成] 任务结束：{event.reason}"
+    return f"[状态] {event.code}"
+
+
+def _print_progress(event: ProgressEvent) -> None:
+    print(f"{time.strftime('%H:%M:%S')} {format_progress_event(event)}", flush=True)
+
+
+def _print_device_status(category: str, message: str) -> None:
+    print(f"{time.strftime('%H:%M:%S')} {format_device_status(category, message)}", flush=True)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -89,7 +157,11 @@ def _confirm(prompt: str, expected: str) -> None:
 
 
 def _adapter(args: argparse.Namespace) -> AppiumBossAdapter:
-    return AppiumBossAdapter(AppiumConfig.load(args.config), args.appium_url)
+    return AppiumBossAdapter(
+        AppiumConfig.load(args.config),
+        args.appium_url,
+        status_reporter=_print_device_status,
+    )
 
 
 def run(args: argparse.Namespace) -> int:
@@ -99,7 +171,9 @@ def run(args: argparse.Namespace) -> int:
             minimum_salary_k=args.minimum_salary_k,
             match_threshold=args.threshold,
         )
+        print(f"{time.strftime('%H:%M:%S')} [启动] 正在连接手机自动化服务……", flush=True)
         with _adapter(args) as adapter:
+            print(f"{time.strftime('%H:%M:%S')} [启动] 手机连接成功，开始逐个检查岗位", flush=True)
             result = run_streaming_applications(
                 adapter,
                 MatchClient(args.service_url),
@@ -109,13 +183,13 @@ def run(args: argparse.Namespace) -> int:
                 daily_limit=args.daily_limit,
                 batch_size=args.batch_size,
                 cooldown_seconds=args.cooldown_seconds,
+                on_progress=_print_progress,
             )
-        print(json.dumps({
-            "contacted": result.contacted,
-            "skipped": result.skipped,
-            "dailyTotal": result.daily_total,
-            "stopReason": result.stop_reason,
-        }, ensure_ascii=False, indent=2))
+        print(
+            f"{time.strftime('%H:%M:%S')} [汇总] 本次成功 {result.contacted} 个，"
+            f"跳过 {result.skipped} 个，今日累计 {result.daily_total} 个",
+            flush=True,
+        )
         return 0
 
     store = BatchStore(args.data_dir)
@@ -219,8 +293,8 @@ def main(argv: list[str] | None = None) -> int:
         code = getattr(error, "code", "COMMAND_FAILED")
         if logger is not None and args is not None:
             logger.write("COMMAND_FAILED", batch_id=getattr(args, "batch_id", ""), status=args.command, code=code)
-        print(json.dumps({"error": {"code": code, "message": str(error)}}, ensure_ascii=False), file=sys.stderr)
+        print(f"{time.strftime('%H:%M:%S')} {format_failure(code, str(error))}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:
-        print(json.dumps({"error": {"code": "INTERRUPTED", "message": "操作已由用户中断"}}, ensure_ascii=False), file=sys.stderr)
+        print(f"{time.strftime('%H:%M:%S')} [结束] 操作已由用户中断", file=sys.stderr)
         return 130

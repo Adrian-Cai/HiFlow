@@ -42,6 +42,17 @@ class StreamingRunResult:
     stop_reason: str
 
 
+@dataclass(frozen=True, slots=True)
+class ProgressEvent:
+    code: str
+    job: Job | None = None
+    reason: str = ""
+    score: int | None = None
+    daily_total: int | None = None
+    daily_limit: int | None = None
+    seconds: float | None = None
+
+
 def run_streaming_applications(
     session: StreamingJobSession,
     matcher: JobMatcher,
@@ -54,6 +65,7 @@ def run_streaming_applications(
     cooldown_seconds: float = 120,
     sleeper: Callable[[float], None] = time.sleep,
     now_provider: Callable[[], datetime] = lambda: datetime.now(CHINA_TIMEZONE),
+    on_progress: Callable[[ProgressEvent], None] | None = None,
 ) -> StreamingRunResult:
     if not resume_id.strip():
         raise WorkflowError("RESUME_ID_REQUIRED", "resume_id 不能为空")
@@ -65,26 +77,42 @@ def run_streaming_applications(
     contacted = 0
     skipped = 0
     contacted_fingerprints = store.contacted_fingerprints()
+    emit = on_progress or (lambda _event: None)
+    emit(ProgressEvent("RUN_STARTED", daily_total=daily_total, daily_limit=daily_limit))
+
+    def finish(reason: str) -> StreamingRunResult:
+        emit(ProgressEvent("RUN_STOPPED", reason=reason, daily_total=daily_total, daily_limit=daily_limit))
+        return StreamingRunResult(contacted, skipped, daily_total, reason)
+
     if daily_total >= daily_limit:
-        return StreamingRunResult(contacted, skipped, daily_total, "DAILY_LIMIT_REACHED")
+        return finish("DAILY_LIMIT_REACHED")
 
     while daily_total < daily_limit:
+        if contacted or skipped:
+            emit(ProgressEvent("NEXT_JOB_REQUESTED", daily_total=daily_total, daily_limit=daily_limit))
         job = session.next_job()
         if job is None:
-            return StreamingRunResult(contacted, skipped, daily_total, "NO_MORE_JOBS")
+            return finish("NO_MORE_JOBS")
+        emit(ProgressEvent("JOB_READ", job=job))
         if job.fingerprint in contacted_fingerprints:
             skipped += 1
+            emit(ProgressEvent("JOB_SKIPPED", job=job, reason="ALREADY_CONTACTED"))
             continue
 
-        if policy.precheck(job):
+        precheck_reasons = policy.precheck(job)
+        if precheck_reasons:
             skipped += 1
+            emit(ProgressEvent("JOB_SKIPPED", job=job, reason=precheck_reasons[0]))
             continue
         match = matcher.match(resume_id, job)
+        emit(ProgressEvent("JOB_MATCHED", job=job, score=match.score))
         if not policy.accepts_match(match):
             skipped += 1
+            emit(ProgressEvent("JOB_SKIPPED", job=job, reason="MATCH_REJECTED", score=match.score))
             continue
         if not session.contact_current():
             skipped += 1
+            emit(ProgressEvent("JOB_SKIPPED", job=job, reason="ALREADY_CONTACTED_ON_PLATFORM"))
             continue
 
         contacted_at = now_provider().astimezone(CHINA_TIMEZONE)
@@ -92,12 +120,22 @@ def run_streaming_applications(
         contacted_fingerprints.add(job.fingerprint)
         contacted += 1
         daily_total += 1
+        emit(
+            ProgressEvent(
+                "JOB_CONTACTED",
+                job=job,
+                score=match.score,
+                daily_total=daily_total,
+                daily_limit=daily_limit,
+            )
+        )
         if daily_total >= daily_limit:
-            return StreamingRunResult(contacted, skipped, daily_total, "DAILY_LIMIT_REACHED")
+            return finish("DAILY_LIMIT_REACHED")
         if daily_total % batch_size == 0:
+            emit(ProgressEvent("COOLDOWN_STARTED", seconds=cooldown_seconds, daily_total=daily_total))
             sleeper(cooldown_seconds)
 
-    return StreamingRunResult(contacted, skipped, daily_total, "DAILY_LIMIT_REACHED")
+    return finish("DAILY_LIMIT_REACHED")
 
 
 def select_candidates(

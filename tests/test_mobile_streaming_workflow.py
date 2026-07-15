@@ -7,7 +7,7 @@ from mobile_automation.activity import ActivityLevel
 from mobile_automation.models import Job, MatchResult
 from mobile_automation.policy import JobPolicy
 from mobile_automation.storage import ApplicationStore
-from mobile_automation.workflow import run_streaming_applications
+from mobile_automation.workflow import ProgressEvent, run_streaming_applications
 
 
 CHINA_TZ = timezone(timedelta(hours=8))
@@ -58,6 +58,40 @@ class FakeMatcher:
 
 
 class StreamingWorkflowTests(unittest.TestCase):
+    def test_reports_chinese_log_ready_progress_events_for_read_skip_match_and_contact(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            low_salary = make_job(1, salary="14-25K")
+            suitable = make_job(2)
+            events: list[ProgressEvent] = []
+
+            run_streaming_applications(
+                FakeJobSession([low_salary, suitable]),
+                FakeMatcher(),
+                ApplicationStore(Path(directory)),
+                resume_id="resume_001",
+                policy=JobPolicy(),
+                sleeper=lambda _seconds: None,
+                on_progress=events.append,
+            )
+
+            self.assertEqual(
+                [event.code for event in events],
+                [
+                    "RUN_STARTED",
+                    "JOB_READ",
+                    "JOB_SKIPPED",
+                    "NEXT_JOB_REQUESTED",
+                    "JOB_READ",
+                    "JOB_MATCHED",
+                    "JOB_CONTACTED",
+                    "NEXT_JOB_REQUESTED",
+                    "RUN_STOPPED",
+                ],
+            )
+            self.assertEqual(events[2].reason, "SALARY_BELOW_MINIMUM")
+            self.assertEqual(events[5].score, 95)
+            self.assertEqual(events[6].daily_total, 1)
+
     def test_filters_before_matching_and_contacts_eligible_job_on_current_detail(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             low_salary = make_job(1, salary="14-25K")
