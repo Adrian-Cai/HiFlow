@@ -75,6 +75,12 @@ class MatchClientTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, "MATCH_RESPONSE_INVALID")
 
+    def test_match_client_rejects_any_non_loopback_service(self) -> None:
+        with self.assertRaises(MatchServiceError) as raised:
+            MatchClient("https://matcher.example.com")
+
+        self.assertEqual(raised.exception.code, "MATCH_SERVICE_NOT_LOCAL")
+
 
 if __name__ == "__main__":
     unittest.main()

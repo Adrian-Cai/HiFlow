@@ -5,15 +5,21 @@ import json
 import subprocess
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 from .appium_adapter import AppiumBossAdapter, AppiumConfig
 from .audit import AuditLogger
-from .errors import HiFlowMobileError, WorkflowError
+from .errors import AutomationError, HiFlowMobileError, WorkflowError
 from .matcher import MatchClient
 from .models import Batch, BatchStatus
 from .policy import JobPolicy
 from .storage import ApplicationStore, BatchStore
+from .verification import (
+    VerificationReportStore,
+    collect_verification_identity,
+    run_stability_verification,
+)
 from .workflow import ProgressEvent, apply_batch, run_streaming_applications, scan_and_create_batch
 
 
@@ -37,6 +43,13 @@ _FAILURE_HINT_TEXT = {
     "MATCH_SERVICE_UNAVAILABLE": "本地匹配服务不可用；建议改用一键启动脚本自动启动服务。",
     "SECURITY_VERIFICATION": "任务已暂停，进度已经保留；请在手机上完成验证后重新启动。",
 }
+
+
+def _configure_console_errors(*streams: object) -> None:
+    for stream in streams:
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(errors="backslashreplace")
 
 
 def format_failure(code: str, message: str) -> str:
@@ -104,6 +117,11 @@ def build_parser() -> argparse.ArgumentParser:
     auto.add_argument("--service-url", default="http://127.0.0.1:8787")
     _add_appium_options(auto)
 
+    verify = subparsers.add_parser("verify", help="只读验证岗位详情往返与列表滚动稳定性")
+    verify.add_argument("--job-limit", type=int, default=50)
+    verify.add_argument("--max-scrolls", type=int, default=30)
+    _add_appium_options(verify)
+
     scan = subparsers.add_parser("scan", help="扫描活跃岗位并生成待确认批次")
     scan.add_argument("--resume-id", required=True)
     scan.add_argument("--threshold", type=int, default=80)
@@ -156,35 +174,96 @@ def _confirm(prompt: str, expected: str) -> None:
         raise WorkflowError("CONFIRMATION_REJECTED", "确认文本不匹配，未执行任何沟通动作")
 
 
-def _adapter(args: argparse.Namespace) -> AppiumBossAdapter:
+def _adapter(args: argparse.Namespace, *, allow_contact: bool = False) -> AppiumBossAdapter:
+    config = AppiumConfig.load(args.config)
+    if hasattr(args, "max_scrolls"):
+        config = replace(config, max_scrolls=max(0, min(30, int(args.max_scrolls))))
     return AppiumBossAdapter(
-        AppiumConfig.load(args.config),
+        config,
         args.appium_url,
+        allow_contact=allow_contact,
         status_reporter=_print_device_status,
     )
 
 
 def run(args: argparse.Namespace) -> int:
+    if args.command == "verify":
+        identity = collect_verification_identity(args.config)
+        application_store = ApplicationStore(args.data_dir)
+        report_store = VerificationReportStore(args.data_dir / "verifications")
+        print(
+            f"{time.strftime('%H:%M:%S')} [验证] 开始只读检查 {args.job_limit} 个唯一岗位；"
+            "不会启动匹配服务，也不会点击沟通按钮",
+            flush=True,
+        )
+        with _adapter(args, allow_contact=False) as adapter:
+            report = run_stability_verification(
+                adapter,
+                application_store,
+                report_store,
+                identity=identity,
+                target_jobs=args.job_limit,
+                on_progress=lambda completed, target, job: print(
+                    f"{time.strftime('%H:%M:%S')} [验证] {completed}/{target}｜"
+                    f"{job.title}｜{job.company}｜已返回原列表",
+                    flush=True,
+                ),
+            )
+        print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2), flush=True)
+        if report.status == "PASS":
+            print(
+                f"{time.strftime('%H:%M:%S')} [通过] 只读稳定性验证通过："
+                f"{report.unique_jobs}/{report.target_jobs}",
+                flush=True,
+            )
+            return 0
+        if report.status == "INCOMPLETE":
+            print(
+                f"{time.strftime('%H:%M:%S')} [未完成] 当前列表仅验证 "
+                f"{report.unique_jobs}/{report.target_jobs} 个唯一岗位",
+                flush=True,
+            )
+            return 3
+        print(
+            f"{time.strftime('%H:%M:%S')} [失败] 只读验证失败：{report.error_code}",
+            flush=True,
+        )
+        return 2
+
     if args.command == "auto":
         application_store = ApplicationStore(args.data_dir)
         policy = JobPolicy(
             minimum_salary_k=args.minimum_salary_k,
             match_threshold=args.threshold,
         )
-        print(f"{time.strftime('%H:%M:%S')} [启动] 正在连接手机自动化服务……", flush=True)
-        with _adapter(args) as adapter:
-            print(f"{time.strftime('%H:%M:%S')} [启动] 手机连接成功，开始逐个检查岗位", flush=True)
-            result = run_streaming_applications(
-                adapter,
-                MatchClient(args.service_url),
-                application_store,
-                resume_id=args.resume_id,
-                policy=policy,
-                daily_limit=args.daily_limit,
-                batch_size=args.batch_size,
-                cooldown_seconds=args.cooldown_seconds,
-                on_progress=_print_progress,
-            )
+        recoveries = 0
+        while True:
+            print(f"{time.strftime('%H:%M:%S')} [启动] 正在连接手机自动化服务……", flush=True)
+            try:
+                with _adapter(args, allow_contact=True) as adapter:
+                    print(f"{time.strftime('%H:%M:%S')} [启动] 手机连接成功，开始逐个检查岗位", flush=True)
+                    result = run_streaming_applications(
+                        adapter,
+                        MatchClient(args.service_url),
+                        application_store,
+                        resume_id=args.resume_id,
+                        policy=policy,
+                        daily_limit=args.daily_limit,
+                        batch_size=args.batch_size,
+                        cooldown_seconds=args.cooldown_seconds,
+                        on_progress=_print_progress,
+                    )
+                break
+            except AutomationError as error:
+                if error.code != "APPIUM_PAGE_READ_FAILED" or recoveries >= 5:
+                    raise
+                recoveries += 1
+                print(
+                    f"{time.strftime('%H:%M:%S')} [恢复] 手机页面服务短暂失去响应，"
+                    f"正在重新连接手机（{recoveries}/5）；已确认沟通进度不会丢失。",
+                    flush=True,
+                )
+                time.sleep(2)
         print(
             f"{time.strftime('%H:%M:%S')} [汇总] 本次成功 {result.contacted} 个，"
             f"跳过 {result.skipped} 个，今日累计 {result.daily_total} 个",
@@ -199,7 +278,7 @@ def run(args: argparse.Namespace) -> int:
         _print_batch(store.load(args.batch_id))
         return 0
     if args.command == "scan":
-        with _adapter(args) as adapter:
+        with _adapter(args, allow_contact=False) as adapter:
             batch = scan_and_create_batch(
                 adapter,
                 MatchClient(args.service_url),
@@ -221,11 +300,11 @@ def run(args: argparse.Namespace) -> int:
         _confirm("确认后将逐个点击以上岗位的沟通按钮。", f"APPLY {batch.id}")
         batch.confirm()
         store.save(batch)
-        with _adapter(args) as adapter:
+        with _adapter(args, allow_contact=True) as adapter:
             result = apply_batch(batch, adapter, store)
     elif args.command == "resume":
         _confirm("请先在手机上完成人工验证。", f"RESUME {batch.id}")
-        with _adapter(args) as adapter:
+        with _adapter(args, allow_contact=True) as adapter:
             result = apply_batch(batch, adapter, store, resume=True)
     else:
         raise WorkflowError("COMMAND_UNSUPPORTED", "不支持的命令")
@@ -275,6 +354,7 @@ def doctor_result(devices: list[str], client_installed: bool) -> dict[str, objec
 
 
 def main(argv: list[str] | None = None) -> int:
+    _configure_console_errors(sys.stdout, sys.stderr)
     args: argparse.Namespace | None = None
     logger: AuditLogger | None = None
     try:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from urllib.parse import urlparse
 
 from .errors import HiFlowMobileError
 from .models import Job, MatchResult
@@ -14,6 +15,12 @@ class MatchServiceError(HiFlowMobileError):
 
 class MatchClient:
     def __init__(self, base_url: str = "http://127.0.0.1:8787", timeout: float = 10.0) -> None:
+        parsed = urlparse(base_url)
+        if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
+            raise MatchServiceError(
+                "MATCH_SERVICE_NOT_LOCAL",
+                "匹配服务仅允许使用 127.0.0.1 或 localhost 本机地址",
+            )
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
 

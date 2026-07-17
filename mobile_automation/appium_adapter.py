@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -11,6 +10,7 @@ from typing import Any, Callable
 from .activity import ActivityLevel, normalize_activity
 from .errors import AutomationError, UserActionRequired
 from .models import Job
+from .verification import VerificationSessionMetrics
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +54,7 @@ class AppiumConfig:
         required_ids = {
             "jobTab",
             "jobList",
+            "filterLabel",
             "jobCard",
             "cardTitle",
             "cardCompany",
@@ -75,7 +76,7 @@ class AppiumConfig:
             version=1,
             app_package=str(data["appPackage"]),
             app_activity=str(data.get("appActivity") or ""),
-            max_scrolls=max(0, min(10, int(data.get("maxScrolls", 5)))),
+            max_scrolls=max(0, min(30, int(data.get("maxScrolls", 5)))),
             job_card_locators=locators,
             communicate_texts=tuple(data.get("communicateTexts") or ("立即沟通", "打招呼", "感兴趣")),
             continue_texts=tuple(data.get("continueTexts") or ("继续沟通",)),
@@ -86,6 +87,7 @@ class AppiumConfig:
 
 _SALARY = re.compile(r"\d+(?:\.\d+)?\s*[-–—~至]\s*\d+(?:\.\d+)?\s*[Kk]|\d+\s*[Kk](?:以上)?")
 _CITIES = re.compile(r"北京|上海|广州|深圳|杭州|成都|武汉|南京|苏州|重庆|西安|郑州|长沙|天津|合肥|厦门|东莞|佛山|青岛|济南|周口")
+_FILTERED_LIST = re.compile(r"^筛选(?:·|\s*)[1-9]\d*$")
 
 
 def parse_job_card_text(value: str) -> Job | None:
@@ -140,6 +142,7 @@ def build_job_from_fields(
     location: str,
     activity_text: str,
     description: str,
+    allow_unknown_activity: bool = False,
 ) -> Job:
     values = {
         "title": str(title or "").strip(),
@@ -152,7 +155,7 @@ def build_job_from_fields(
     activity_level = normalize_activity(values["activity_text"])
     if not values["title"] or not values["company"] or not values["salary"]:
         raise AutomationError("JOB_FIELDS_INCOMPLETE", "岗位详情缺少标题、公司或薪资")
-    if activity_level == ActivityLevel.UNKNOWN:
+    if activity_level == ActivityLevel.UNKNOWN and not allow_unknown_activity:
         raise AutomationError("JOB_ACTIVITY_UNKNOWN", "岗位活跃度无法可靠识别")
     if len(values["description"]) < 40:
         raise AutomationError("JOB_DESCRIPTION_INCOMPLETE", "岗位详情描述过短，已停止匹配")
@@ -191,8 +194,10 @@ def _xpath_literal(value: str) -> str:
 
 def is_known_subpage_activity(activity: str) -> bool:
     value = str(activity or "")
-    return value.endswith(".geekjd.activity.BossJobPagerActivity") or value.endswith(
-        ".chat.single.activity.ChatRoomActivity"
+    return (
+        value.endswith(".geekjd.activity.BossJobPagerActivity")
+        or value.endswith(".chat.single.activity.ChatRoomActivity")
+        or value.endswith(".module.webview.WebViewActivity")
     )
 
 
@@ -206,10 +211,12 @@ class AppiumBossAdapter:
         config: AppiumConfig,
         server_url: str = "http://127.0.0.1:4723",
         *,
+        allow_contact: bool = False,
         status_reporter: Callable[[str, str], None] | None = None,
     ) -> None:
         self.config = config
         self.server_url = server_url
+        self._allow_contact = allow_contact
         self._status_reporter = status_reporter or (lambda _category, _message: None)
         self.driver: Any | None = None
         self._by: Any | None = None
@@ -218,7 +225,12 @@ class AppiumBossAdapter:
         self._stream_seen_cards: set[str] = set()
         self._stream_pending: list[Job] = []
         self._stream_unchanged_scrolls = 0
+        self._stream_scrolls = 0
         self._stream_exhaustion_refreshed = False
+        self._last_blocker_check_at = float("-inf")
+        self._verification_scrolls = 0
+        self._verification_refreshes = 0
+        self._contact_attempts = 0
 
     def __enter__(self) -> "AppiumBossAdapter":
         self.connect()
@@ -263,7 +275,16 @@ class AppiumBossAdapter:
     def _configure_driver_settings(self) -> None:
         if self.driver is None:
             raise AutomationError("APPIUM_NOT_CONNECTED", "Appium 会话尚未建立")
-        self.driver.update_settings({"enableNotificationListener": False})
+        self.driver.update_settings(
+            {
+                "elementResponseAttributes": "text",
+                "enableNotificationListener": False,
+                "shouldUseCompactResponses": False,
+                "trackScrollEvents": False,
+                "waitForIdleTimeout": 0,
+                "waitForSelectorTimeout": 500,
+            }
+        )
 
     def _capabilities(self) -> dict[str, Any]:
         capabilities: dict[str, Any] = {
@@ -277,6 +298,7 @@ class AppiumBossAdapter:
             "autoGrantPermissions": False,
             "ignoreHiddenApiPolicyError": True,
             "newCommandTimeout": 180,
+            "uiautomator2ServerReadTimeout": 60000,
         }
         if self.config.app_activity:
             capabilities["appActivity"] = self.config.app_activity
@@ -299,11 +321,8 @@ class AppiumBossAdapter:
             self._assert_no_blocker()
             discovered = 0
             summaries: list[Job] = []
-            for element in self._find_job_cards():
-                summary = self._read_card_summary(element)
-                if summary is None:
-                    continue
-                card_key = "|".join((summary.title, summary.company, summary.salary, summary.location))
+            for summary in self._read_visible_card_summaries():
+                card_key = "|".join((summary.title, summary.company))
                 if card_key in seen_cards:
                     continue
                 seen_cards.add(card_key)
@@ -342,6 +361,7 @@ class AppiumBossAdapter:
             self._stream_seen_cards.clear()
             self._stream_pending.clear()
             self._stream_unchanged_scrolls = 0
+            self._stream_scrolls = 0
             self._stream_exhaustion_refreshed = False
             self._open_job_list()
         elif self._current_job is not None:
@@ -349,40 +369,45 @@ class AppiumBossAdapter:
             self._current_job = None
 
         while True:
-            if self._stream_pending:
-                summary = self._stream_pending.pop(0)
-                job = self._open_and_read_detail(summary, keep_open=True)
-                self._current_job = job
-                return job
-
             self._assert_no_blocker()
             discovered = 0
-            for element in self._find_job_cards():
-                summary = self._read_card_summary(element)
+            for card in self._find_job_cards():
+                summary = self._read_card_summary(card)
                 if summary is None:
                     continue
-                card_key = "|".join((summary.title, summary.company, summary.salary, summary.location))
+                card_key = "|".join((summary.title, summary.company))
                 if card_key in self._stream_seen_cards:
                     continue
                 self._stream_seen_cards.add(card_key)
                 discovered += 1
-                if summary.activity_level in {ActivityLevel.TODAY, ActivityLevel.WITHIN_3_DAYS}:
-                    self._stream_pending.append(summary)
-
-            if self._stream_pending:
-                continue
+                if summary.activity_level in {ActivityLevel.TODAY, ActivityLevel.WITHIN_3_DAYS} or (
+                    not self._allow_contact and summary.activity_level == ActivityLevel.UNKNOWN
+                ):
+                    try:
+                        job = self._open_bound_card_and_read_detail(card, summary, keep_open=True)
+                    except AutomationError as error:
+                        if error.code != "NON_JOB_PAGE_OPENED":
+                            raise
+                        self._status_reporter(
+                            "跳过",
+                            f"{summary.title}｜点击后进入非岗位推广页，已返回列表",
+                        )
+                        continue
+                    self._current_job = job
+                    return job
             self._stream_unchanged_scrolls = self._stream_unchanged_scrolls + 1 if discovered == 0 else 0
-            if self._stream_unchanged_scrolls >= 2:
+            if self._stream_scrolls >= self.config.max_scrolls:
                 if self._refresh_exhausted_list_once():
                     continue
                 return None
+            self._stream_scrolls += 1
             if not self._scroll_down():
-                if self._refresh_exhausted_list_once():
-                    continue
-                return None
+                time.sleep(2)
+                continue
             time.sleep(0.8)
 
     def contact(self, job: Job) -> None:
+        self._assert_contact_allowed()
         try:
             self._contact(job)
         except (AutomationError, UserActionRequired):
@@ -394,6 +419,7 @@ class AppiumBossAdapter:
             ) from error
 
     def contact_current(self) -> bool:
+        self._assert_contact_allowed()
         try:
             return self._contact_current()
         except (AutomationError, UserActionRequired):
@@ -402,6 +428,64 @@ class AppiumBossAdapter:
             raise AutomationError(
                 "APPIUM_OPERATION_FAILED",
                 "Appium 设备操作异常，已停止逐岗位沟通",
+            ) from error
+
+    def _assert_contact_allowed(self) -> None:
+        self._contact_attempts += 1
+        if not self._allow_contact:
+            raise AutomationError(
+                "CONTACT_DISABLED",
+                "当前为只读验证模式，代码已禁止点击任何沟通按钮",
+            )
+
+    def verification_metrics(self) -> VerificationSessionMetrics:
+        return VerificationSessionMetrics(
+            scrolls=self._verification_scrolls,
+            refreshes=self._verification_refreshes,
+            contact_attempts=self._contact_attempts,
+        )
+
+    def verify_preconditions(self) -> dict[str, str]:
+        self._require_driver()
+        if not self._job_list_visible():
+            raise AutomationError(
+                "VERIFICATION_JOB_LIST_REQUIRED",
+                "只读验证开始前，请停留在目标城市的岗位主列表页",
+            )
+        self._assert_no_blocker()
+        texts = self._texts_by_id(self.config.element_ids["filterLabel"])
+        cities = [text for text in texts if _CITIES.fullmatch(text)]
+        if len(cities) != 1:
+            raise AutomationError(
+                "VERIFICATION_CITY_NOT_FOUND",
+                "岗位列表未能唯一识别当前城市，请确认已进入目标城市列表",
+            )
+        filters = [text for text in texts if _FILTERED_LIST.fullmatch(text)]
+        if len(filters) != 1:
+            raise AutomationError(
+                "VERIFICATION_FILTER_REQUIRED",
+                "岗位列表未识别到“筛选·1”，请先选择 BOSS 三日内活跃",
+            )
+        return {"city": cities[0], "filterText": filters[0]}
+
+    def finish_current_job(self) -> None:
+        try:
+            self._require_driver()
+            if self._current_job is not None:
+                self._return_to_job_list()
+                self._current_job = None
+                return
+            if not self._job_list_visible():
+                raise AutomationError(
+                    "JOB_LIST_NOT_RESTORED",
+                    "岗位详情读取完成后没有恢复到原岗位列表",
+                )
+        except (AutomationError, UserActionRequired):
+            raise
+        except Exception as error:
+            raise AutomationError(
+                "APPIUM_PAGE_READ_FAILED",
+                "返回岗位列表时 Appium 页面服务异常，任务已安全停止",
             ) from error
 
     def _contact_current(self) -> bool:
@@ -525,8 +609,11 @@ class AppiumBossAdapter:
         tab.click()
         self._wait_unique_id(self.config.element_ids["jobList"], timeout=12)
         time.sleep(2)
+        self._verification_refreshes += 1
 
     def _job_list_visible(self) -> bool:
+        if not str(self.driver.current_activity or "").endswith(".module.main.activity.MainActivity"):
+            return False
         matches = self._visible(
             self.driver.find_elements(self._by.ID, self.config.element_ids["jobList"])
         )
@@ -548,7 +635,9 @@ class AppiumBossAdapter:
         location = self._child_text(element, "cardLocation")
         activity_text = self._child_text(element, "cardActivity")
         activity_level = normalize_activity(activity_text)
-        if not title or not company or not salary or activity_level == ActivityLevel.UNKNOWN:
+        if not title or not company or not salary:
+            return None
+        if activity_level == ActivityLevel.UNKNOWN and self._allow_contact:
             return None
         return Job(
             title=title,
@@ -561,20 +650,74 @@ class AppiumBossAdapter:
             source_ref=f"{title}|{company}",
         )
 
+    def _read_visible_card_summaries(self) -> list[Job]:
+        field_keys = ("cardTitle", "cardCompany", "cardSalary", "cardLocation", "cardActivity")
+        columns: dict[str, list[str]] = {}
+        for key in field_keys:
+            resource_id = self.config.element_ids[key]
+            columns[key] = self._texts_by_id(resource_id)
+
+        row_count = max((len(values) for values in columns.values()), default=0)
+        summaries: list[Job] = []
+        for index in range(row_count):
+            values = {
+                key: columns[key][index] if index < len(columns[key]) else ""
+                for key in field_keys
+            }
+            activity_level = normalize_activity(values["cardActivity"])
+            if (
+                not values["cardTitle"]
+                or not values["cardCompany"]
+                or not values["cardSalary"]
+            ):
+                continue
+            summaries.append(
+                Job(
+                    title=values["cardTitle"],
+                    company=values["cardCompany"],
+                    salary=values["cardSalary"],
+                    location=values["cardLocation"],
+                    activity_level=activity_level,
+                    activity_text=values["cardActivity"],
+                    jd_text="\n".join(
+                        value
+                        for value in (
+                            values["cardTitle"],
+                            values["cardCompany"],
+                            values["cardSalary"],
+                            values["cardLocation"],
+                            values["cardActivity"],
+                        )
+                        if value
+                    ),
+                    source_ref=f'{values["cardTitle"]}|{values["cardCompany"]}',
+                )
+            )
+        return summaries
+
     def _open_and_read_detail(self, summary: Job, *, keep_open: bool = False) -> Job:
         target = self._find_job_title(summary)
         if target is None:
             raise AutomationError("JOB_NOT_FOUND", "扫描详情前无法重新定位岗位卡片")
         target.click()
-        description_element = self._wait_unique_id(self.config.element_ids["detailDescription"], timeout=12)
+        return self._read_open_detail(summary, keep_open=keep_open)
+
+    def _open_bound_card_and_read_detail(
+        self,
+        card: Any,
+        summary: Job,
+        *,
+        keep_open: bool = False,
+    ) -> Job:
+        card.click()
+        return self._read_open_detail(summary, keep_open=keep_open)
+
+    def _read_open_detail(self, summary: Job, *, keep_open: bool) -> Job:
+        time.sleep(1.5)
+        description_element = self._wait_for_job_detail_description(timeout=12)
         self._assert_no_blocker()
 
         description = str(description_element.text or "").strip()
-        if "查看更多" in description:
-            description_element.click()
-            time.sleep(0.6)
-            description_element = self._wait_unique_id(self.config.element_ids["detailDescription"], timeout=5)
-            description = str(description_element.text or "").strip()
 
         title = self._text_by_id("detailTitle") or summary.title
         salary = self._text_by_id("detailSalary") or summary.salary
@@ -589,12 +732,32 @@ class AppiumBossAdapter:
             location=location,
             activity_text=activity_text,
             description=description,
+            allow_unknown_activity=not self._allow_contact,
         )
         if not keep_open:
             self.driver.back()
             self._wait_unique_id(self.config.element_ids["jobList"], timeout=12)
             time.sleep(0.8)
         return job
+
+    def _wait_for_job_detail_description(self, *, timeout: float) -> Any:
+        resource_id = self.config.element_ids["detailDescription"]
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if str(self.driver.current_activity or "").endswith(".module.webview.WebViewActivity"):
+                self._return_to_job_list()
+                raise AutomationError(
+                    "NON_JOB_PAGE_OPENED",
+                    "点击岗位后进入了非岗位推广页",
+                )
+            matches = self._visible(self.driver.find_elements(self._by.ID, resource_id))
+            if len(matches) == 1:
+                return matches[0]
+            if len(matches) > 1:
+                raise AutomationError("LOCATOR_AMBIGUOUS", f"资源控件不唯一：{resource_id}")
+            time.sleep(0.5)
+            self._assert_no_blocker()
+        raise AutomationError("LOCATOR_NOT_FOUND", f"等待资源控件超时：{resource_id}")
 
     def _child_text(self, element: Any, key: str) -> str:
         matches = self._visible(element.find_elements(self._by.ID, self.config.element_ids[key]))
@@ -603,10 +766,26 @@ class AppiumBossAdapter:
         return str(matches[0].text or "").strip() if matches else ""
 
     def _text_by_id(self, key: str) -> str:
-        matches = self._visible(self.driver.find_elements(self._by.ID, self.config.element_ids[key]))
-        if len(matches) > 1:
+        texts = self._texts_by_id(self.config.element_ids[key])
+        if len(texts) > 1:
             raise AutomationError("LOCATOR_AMBIGUOUS", f"岗位详情字段 {key} 不唯一")
-        return str(matches[0].text or "").strip() if matches else ""
+        return texts[0] if texts else ""
+
+    def _texts_by_id(self, resource_id: str) -> list[str]:
+        executor = getattr(self.driver, "command_executor", None)
+        session_id = getattr(self.driver, "session_id", None)
+        if executor is not None and session_id:
+            response = executor.execute(
+                "findElements",
+                {"sessionId": session_id, "using": "id", "value": resource_id},
+            )
+            values = list(response.get("value") or [])
+            if all(isinstance(value, dict) and "text" in value for value in values):
+                return [str(value.get("text") or "").strip() for value in values]
+        return [
+            str(element.text or "").strip()
+            for element in self.driver.find_elements(self._by.ID, resource_id)
+        ]
 
     def _wait_unique_id(self, resource_id: str, *, timeout: float) -> Any:
         deadline = time.monotonic() + timeout
@@ -626,10 +805,31 @@ class AppiumBossAdapter:
 
     def _assert_no_blocker(self) -> None:
         self._require_driver()
-        source = str(self.driver.page_source or "")
-        blocker = next((text for text in self.config.blocker_texts if text and text in source), None)
-        if blocker:
-            raise UserActionRequired("SECURITY_VERIFICATION", f"检测到需要人工处理的页面：{blocker}")
+        checked_at = time.monotonic()
+        if checked_at - self._last_blocker_check_at < 2.0:
+            return
+        self._last_blocker_check_at = checked_at
+        blocker_texts = tuple(text for text in self.config.blocker_texts if text)
+        if not blocker_texts:
+            return
+        pattern = ".*(?:" + "|".join(re.escape(text) for text in blocker_texts) + ").*"
+        literal = uiautomator_literal(pattern)
+        selector = f'new UiSelector().textMatches("{literal}")'
+        matches = self._visible(
+            self.driver.find_elements(self._by.ANDROID_UIAUTOMATOR, selector)
+        )
+        if not matches:
+            return
+        observed = str(
+            matches[0].text
+            or matches[0].get_attribute("content-desc")
+            or "需要人工处理的页面"
+        )
+        blocker = next((text for text in blocker_texts if text in observed), observed)
+        raise UserActionRequired(
+            "SECURITY_VERIFICATION",
+            f"检测到需要人工处理的页面：{blocker}",
+        )
 
     def _find_job_cards(self) -> list[Any]:
         cards: list[Any] = []
@@ -644,22 +844,18 @@ class AppiumBossAdapter:
         return cards
 
     def _find_job_title(self, job: Job) -> Any | None:
-        title_elements = self._visible(
-            self.driver.find_elements(self._by.ID, self.config.element_ids["cardTitle"])
+        title_id = uiautomator_literal(self.config.element_ids["cardTitle"])
+        title = uiautomator_literal(job.title)
+        exact_selector = f'new UiSelector().resourceId("{title_id}").text("{title}")'
+        exact_matches = self._visible(
+            self.driver.find_elements(self._by.ANDROID_UIAUTOMATOR, exact_selector)
         )
-        exact_matches = [
-            element
-            for element in title_elements
-            if str(element.text or element.get_attribute("content-desc") or "").strip() == job.title
-        ]
         if len(exact_matches) == 1:
             return exact_matches[0]
         if len(exact_matches) > 1:
-            raise AutomationError("LOCATOR_AMBIGUOUS", "候选岗位定位不唯一，已停止以避免误投")
+            return self._require_unique_job_card_title(job)
 
         list_id = uiautomator_literal(self.config.element_ids["jobList"])
-        title_id = uiautomator_literal(self.config.element_ids["cardTitle"])
-        title = uiautomator_literal(job.title)
         selector = (
             f'new UiScrollable(new UiSelector().resourceId("{list_id}"))'
             f'.setMaxSearchSwipes({self.config.max_scrolls})'
@@ -667,8 +863,38 @@ class AppiumBossAdapter:
         )
         matches = self._visible(self.driver.find_elements(self._by.ANDROID_UIAUTOMATOR, selector))
         if len(matches) > 1:
-            raise AutomationError("LOCATOR_AMBIGUOUS", "候选岗位定位不唯一，已停止以避免误投")
+            return self._require_unique_job_card_title(job)
         return matches[0] if matches else None
+
+    def _require_unique_job_card_title(self, job: Job) -> Any:
+        matches: list[Any] = []
+        expected = tuple(
+            re.sub(r"\s+", "", value).casefold()
+            for value in (job.title, job.company, job.salary, job.location)
+        )
+        for card in self._find_job_cards():
+            title_elements = self._visible(
+                card.find_elements(self._by.ID, self.config.element_ids["cardTitle"])
+            )
+            if len(title_elements) > 1:
+                raise AutomationError("LOCATOR_AMBIGUOUS", "岗位卡片标题控件不唯一")
+            if not title_elements:
+                continue
+            fields = (
+                str(title_elements[0].text or "").strip(),
+                self._child_text(card, "cardCompany"),
+                self._child_text(card, "cardSalary"),
+                self._child_text(card, "cardLocation"),
+            )
+            normalized_fields = tuple(
+                re.sub(r"\s+", "", value).casefold()
+                for value in fields
+            )
+            if normalized_fields == expected:
+                matches.append(title_elements[0])
+        if len(matches) != 1:
+            raise AutomationError("LOCATOR_AMBIGUOUS", "候选岗位定位不唯一，已停止以避免误投")
+        return matches[0]
 
     def _find_unique_text_element(self, texts: tuple[str, ...]) -> Any | None:
         matches: list[Any] = []
@@ -694,31 +920,31 @@ class AppiumBossAdapter:
 
     @staticmethod
     def _visible(elements: list[Any]) -> list[Any]:
-        return [element for element in elements if element.is_displayed() and element.is_enabled()]
+        return list(elements)
 
     def _scroll_down(self) -> bool:
         try:
-            size = self.driver.get_window_size()
-            self._status_reporter("列表", "正在向下滚动查找新岗位")
-            center_x = int(size["width"] * 0.50)
-            start_y = int(size["height"] * 0.75)
-            end_y = int(size["height"] * 0.30)
-            subprocess.run(
-                [
-                    "adb",
-                    "shell",
-                    "input",
-                    "swipe",
-                    str(center_x),
-                    str(start_y),
-                    str(center_x),
-                    str(end_y),
-                    "500",
-                ],
-                capture_output=True,
-                check=True,
-                timeout=5,
+            lists = self._visible(
+                self.driver.find_elements(self._by.ID, self.config.element_ids["jobList"])
             )
-            return True
+            if len(lists) != 1:
+                raise AutomationError(
+                    "JOB_LIST_NOT_VISIBLE" if not lists else "LOCATOR_AMBIGUOUS",
+                    "滚动前未能唯一识别岗位主列表",
+                )
+            self._status_reporter("列表", "正在向下滚动查找新岗位")
+            self._verification_scrolls += 1
+            return bool(
+                self.driver.execute_script(
+                    "mobile: scrollGesture",
+                    {
+                        "elementId": str(lists[0].id),
+                        "direction": "down",
+                        "percent": 0.7,
+                    },
+                )
+            )
+        except AutomationError:
+            raise
         except Exception as error:
             raise AutomationError("SCROLL_FAILED", "岗位列表滚动失败") from error

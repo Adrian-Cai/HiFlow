@@ -184,14 +184,14 @@ def score_match(payload: dict[str, Any]) -> dict[str, Any]:
     title_score = 100 if matched_titles else 62
     skill_score = 45 if not jd_required_skills else min(100, 50 + len(matched_skills) * 8)
     condition_score = 100 if not hit_excludes else 25
-    llm_stub_score = 82 if matched_titles else 66
+    baseline_score = 82 if matched_titles else 66
 
     score = clamp_score(
         hard_score * 0.28 +
         title_score * 0.22 +
         skill_score * 0.30 +
         condition_score * 0.12 +
-        llm_stub_score * 0.08
+        baseline_score * 0.08
     )
 
     decision = "RECOMMEND" if score >= 80 and not hit_excludes else "PASS"
@@ -212,7 +212,7 @@ def score_match(payload: dict[str, Any]) -> dict[str, Any]:
             "titleScore": title_score,
             "skillScore": skill_score,
             "conditionScore": condition_score,
-            "llmScore": llm_stub_score,
+            "ruleBaselineScore": baseline_score,
             "matchedTitles": matched_titles,
             "source": "local-rule-engine",
         },

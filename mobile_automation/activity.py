@@ -23,6 +23,7 @@ _TODAY_PATTERNS = (
     r"今日回复(?:\d+\+?次)?",
 )
 _RECENT_PATTERNS = (
+    r"昨日活跃",
     r"近\s*3\s*日活跃",
     r"3\s*日内活跃",
     r"近\s*三\s*日活跃",

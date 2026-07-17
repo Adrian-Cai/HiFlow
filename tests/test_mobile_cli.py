@@ -1,18 +1,36 @@
 import unittest
+from contextlib import redirect_stdout
+from io import BytesIO, StringIO, TextIOWrapper
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from mobile_automation.activity import ActivityLevel
 from mobile_automation.cli import (
+    _configure_console_errors,
     build_parser,
     doctor_result,
     format_device_status,
     format_failure,
     format_progress_event,
+    run,
 )
+from mobile_automation.errors import AutomationError
 from mobile_automation.models import Job
-from mobile_automation.workflow import ProgressEvent
+from mobile_automation.workflow import ProgressEvent, StreamingRunResult
 
 
 class CliContractTests(unittest.TestCase):
+    def test_console_output_escapes_characters_missing_from_gbk(self) -> None:
+        raw = BytesIO()
+        stream = TextIOWrapper(raw, encoding="gbk", errors="strict")
+        _configure_console_errors(stream, stream)
+        print("岗位\u2f45", file=stream)
+        stream.flush()
+
+        self.assertEqual(stream.errors, "backslashreplace")
+        self.assertIn("\\u2f45", raw.getvalue().decode("gbk"))
+
     def test_formats_device_status_as_a_short_chinese_progress_line(self) -> None:
         self.assertEqual(
             format_device_status("列表", "正在向下滚动查找新岗位"),
@@ -78,6 +96,102 @@ class CliContractTests(unittest.TestCase):
         self.assertEqual(args.batch_size, 5)
         self.assertEqual(args.cooldown_seconds, 120)
         self.assertEqual(args.daily_limit, 150)
+
+    def test_verify_contract_defaults_to_fifty_jobs_and_thirty_scrolls(self) -> None:
+        args = build_parser().parse_args(["verify"])
+
+        self.assertEqual(args.command, "verify")
+        self.assertEqual(args.job_limit, 50)
+        self.assertEqual(args.max_scrolls, 30)
+
+    def test_verify_is_read_only_and_never_constructs_match_client(self) -> None:
+        class AdapterContext:
+            def __enter__(self) -> object:
+                return object()
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+        with TemporaryDirectory() as root:
+            args = build_parser().parse_args(["--data-dir", root, "verify", "--job-limit", "5"])
+            report = SimpleNamespace(
+                status="PASS",
+                unique_jobs=5,
+                target_jobs=5,
+                to_dict=lambda: {"status": "PASS"},
+            )
+            identity = SimpleNamespace(gate_id="gate")
+            with (
+                patch("mobile_automation.cli._adapter", return_value=AdapterContext()) as adapter_factory,
+                patch("mobile_automation.cli.collect_verification_identity", return_value=identity),
+                patch("mobile_automation.cli.run_stability_verification", return_value=report) as verify_run,
+                patch("mobile_automation.cli.MatchClient") as matcher,
+            ):
+                exit_code = run(args)
+
+        self.assertEqual(exit_code, 0)
+        adapter_factory.assert_called_once_with(args, allow_contact=False)
+        matcher.assert_not_called()
+        self.assertEqual(verify_run.call_args.kwargs["target_jobs"], 5)
+
+    def test_auto_reconnects_after_a_transient_page_read_failure(self) -> None:
+        class AdapterContext:
+            def __enter__(self) -> object:
+                return object()
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+        with TemporaryDirectory() as root:
+            args = build_parser().parse_args(
+                ["--data-dir", root, "auto", "--resume-id", "resume_001", "--daily-limit", "1"]
+            )
+            output = StringIO()
+            with (
+                patch("mobile_automation.cli._adapter", side_effect=[AdapterContext(), AdapterContext()]),
+                patch(
+                    "mobile_automation.cli.run_streaming_applications",
+                    side_effect=[
+                        AutomationError("APPIUM_PAGE_READ_FAILED", "页面服务短暂失去响应"),
+                        StreamingRunResult(1, 0, 1, "DAILY_LIMIT_REACHED"),
+                    ],
+                ) as streaming,
+                patch("mobile_automation.cli.time.sleep"),
+                redirect_stdout(output),
+            ):
+                exit_code = run(args)
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(streaming.call_count, 2)
+        self.assertIn("正在重新连接手机", output.getvalue())
+
+    def test_auto_starts_without_reading_a_fifty_job_gate(self) -> None:
+        class AdapterContext:
+            def __enter__(self) -> object:
+                return object()
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+        with TemporaryDirectory() as root:
+            args = build_parser().parse_args(
+                ["--data-dir", root, "auto", "--resume-id", "resume_001", "--daily-limit", "1"]
+            )
+            with (
+                patch("mobile_automation.cli.collect_verification_identity") as collect_identity,
+                patch("mobile_automation.cli.VerificationReportStore.require_valid_gate") as require_gate,
+                patch("mobile_automation.cli._adapter", return_value=AdapterContext()) as adapter_factory,
+                patch(
+                    "mobile_automation.cli.run_streaming_applications",
+                    return_value=StreamingRunResult(1, 0, 1, "DAILY_LIMIT_REACHED"),
+                ),
+            ):
+                exit_code = run(args)
+
+        self.assertEqual(exit_code, 0)
+        adapter_factory.assert_called_once_with(args, allow_contact=True)
+        collect_identity.assert_not_called()
+        require_gate.assert_not_called()
 
     def test_scan_contract(self) -> None:
         args = build_parser().parse_args(["scan", "--resume-id", "resume_001"])

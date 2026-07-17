@@ -66,6 +66,36 @@ class JobPolicyTests(unittest.TestCase):
             with self.subTest(description=description):
                 self.assertIn("EXCLUDED_DOMAIN", self.policy.precheck(make_job(description=description)))
 
+    def test_rejects_excluded_ascii_acronyms_when_they_touch_chinese_text(self) -> None:
+        titles = (
+            "车企HIL测试开发工程师",
+            "ECU软件测试工程师",
+            "IoT平台测试工程师",
+            "MCU系统测试工程师",
+            "ADAS平台测试工程师",
+        )
+        for title in titles:
+            with self.subTest(title=title):
+                self.assertIn("EXCLUDED_DOMAIN", self.policy.precheck(make_job(title=title)))
+
+    def test_rejects_server_bmc_and_bios_hardware_testing(self) -> None:
+        job = make_job(title="服务器BMC&BIOS测试开发工程师")
+
+        self.assertIn("EXCLUDED_DOMAIN", self.policy.precheck(job))
+
+    def test_rejects_in_vehicle_software_test_development(self) -> None:
+        job = make_job(
+            title="车载软件测试开发工程师/专家",
+            description="负责车载底层软件自动化测试框架、诊断刷写测试和功能安全测试。",
+        )
+
+        self.assertIn("EXCLUDED_DOMAIN", self.policy.precheck(job))
+
+    def test_rejects_hardware_acceleration_test_development(self) -> None:
+        job = make_job(title="硬件加速测试开发工程师-AI工具链")
+
+        self.assertIn("EXCLUDED_DOMAIN", self.policy.precheck(job))
+
     def test_does_not_misclassify_software_voice_robot_or_mobile_app_testing(self) -> None:
         job = make_job(description="负责 RAG 语音机器人软件平台及 Android、iOS App 自动化测试")
         self.assertEqual(self.policy.precheck(job), [])

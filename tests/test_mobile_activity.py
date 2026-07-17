@@ -4,6 +4,18 @@ from mobile_automation.activity import ActivityLevel, normalize_activity
 
 
 class ActivityNormalizationTests(unittest.TestCase):
+    def test_real_boss_chinese_activity_labels_are_normalized(self) -> None:
+        expected = {
+            "在线": ActivityLevel.TODAY,
+            "今日活跃": ActivityLevel.TODAY,
+            "昨日活跃": ActivityLevel.WITHIN_3_DAYS,
+            "3日内活跃": ActivityLevel.WITHIN_3_DAYS,
+            "4天前活跃": ActivityLevel.STALE,
+        }
+        for text, level in expected.items():
+            with self.subTest(text=text):
+                self.assertEqual(normalize_activity(text), level)
+
     def test_today_signals_are_normalized(self) -> None:
         for text in (
             "今日活跃",

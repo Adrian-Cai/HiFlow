@@ -1,6 +1,6 @@
 # HiFlow Android 自动筛选
 
-HiFlow 在 Android 真机上逐个读取 Boss 直聘岗位，在当前详情页完成硬过滤、简历匹配和打招呼。它不处理登录、短信、人脸或安全验证，也不会绕过平台限制。
+HiFlow 在 Android 真机上逐个读取 Boss 直聘岗位。默认运行完全只读的稳定性验证；真实沟通必须显式使用 `auto`，且必须先通过同设备、同 BOSS 版本、同代码与选择器版本的 50 岗位门禁。它不处理登录、短信、人脸或安全验证，也不会绕过平台限制。
 
 ## 首次安装
 
@@ -16,24 +16,38 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 ## 一键启动
 
-在手机上登录 Boss 直聘，并停留在目标城市的岗位列表页，然后运行：
+在手机上登录 Boss 直聘，进入目标城市的岗位列表页，并设置“BOSS 三日内活跃”（列表显示“筛选·1”）。先运行 5 岗位只读冒烟：
 
 ```powershell
-.\mobile_automation\start.ps1
+.\mobile_automation\start.ps1 verify --job-limit 5
 ```
 
-脚本会自动检查并按需启动本地岗位匹配服务和 Appium，默认使用 `resume_001`，随后开始逐岗位处理。脚本只停止本次由它启动的服务，不会关闭原本已经运行的服务。
+确认冒烟通过后，从 0 正式验证 50 个岗位：
+
+```powershell
+.\mobile_automation\start.ps1 verify --job-limit 50
+```
+
+不带参数运行 `start.ps1` 也默认进入安全的 50 岗位 `verify` 模式。验证模式只启动 Appium，不启动匹配服务、不调用模型、不点击沟通按钮，也不写投递账本。报告保存在 `mobile_automation/data/verifications/`。
+
+50 岗位报告为 `PASS` 后，才可单独启动真实沟通：
+
+```powershell
+.\mobile_automation\start.ps1 auto --resume-id resume_001
+```
+
+`auto` 使用纯本地确定性规则，匹配地址只允许 `127.0.0.1/localhost`，运行时不依赖 Codex 或其他 AI 判断。脚本只停止本次由它启动的服务，不会关闭原本已经运行的服务。
 
 只验证服务能否启动，不读取岗位也不打招呼：
 
 ```powershell
-.\mobile_automation\start.ps1 -CheckOnly
+.\mobile_automation\start.ps1 verify -CheckOnly
 ```
 
-使用其他简历或覆盖默认参数：
+覆盖真实沟通参数：
 
 ```powershell
-.\mobile_automation\start.ps1 -ResumeId resume_001 `
+.\mobile_automation\start.ps1 auto --resume-id resume_001 `
   --minimum-salary-k 15 --threshold 90 `
   --batch-size 5 --cooldown-seconds 120 --daily-limit 150
 ```
@@ -43,6 +57,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 当前终端只显示容易理解的业务阶段：
 
 ```text
+18:29:58 [验证] 12/50｜测试开发工程师｜示例科技｜已返回原列表
 18:30:01 [岗位] 正在检查岗位：测试开发工程师｜示例科技｜20-30K｜今日活跃
 18:30:02 [匹配] 测试开发工程师｜匹配度 95%
 18:30:03 [沟通] 已成功打招呼：测试开发工程师｜今日累计 3/150
@@ -66,6 +81,8 @@ Appium 控制台级别为 `error`，文件级别为 `debug`。日常观察当前
 
 ## 默认筛选与节流
 
+- `verify` 最多滚动 30 次，岗位之间不刷新；仅列表真正耗尽时刷新一次。任何超时、卡死、重连、沟通尝试或账本变化都会使正式验证失败。
+- `auto` 启动前强制检查有效的 50 岗位 `PASS` 报告；设备、BOSS 版本、选择器或关键代码变化后必须重新验证。
 - 当前岗位列表代表目标城市，进入详情页后不重复检查地址。
 - 每次检查后直接返回原岗位列表位置，不重新点击岗位页签；优先处理当前可见的下一岗位，处理完后再向下续扫。
 - 薪资按区间下限判断，下限必须不低于 15K；面议、日薪或无法可靠解析时跳过。

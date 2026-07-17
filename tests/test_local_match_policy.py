@@ -47,6 +47,8 @@ class LocalMatchPolicyTests(unittest.TestCase):
 
         self.assertGreaterEqual(result["score"], 80)
         self.assertEqual(result["decision"], "RECOMMEND")
+        self.assertIn("ruleBaselineScore", result["detail"])
+        self.assertNotIn("llmScore", result["detail"])
 
     @patch("local_service.server.append_match_log")
     @patch("local_service.server.pick_resume")

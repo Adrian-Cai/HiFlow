@@ -1,8 +1,12 @@
-﻿param(
+﻿[CmdletBinding(PositionalBinding = $false)]
+param(
+    [Parameter(Position = 0)]
+    [ValidateSet('verify', 'auto')]
+    [string]$Mode = 'verify',
     [string]$ResumeId = 'resume_001',
     [switch]$CheckOnly,
     [Parameter(ValueFromRemainingArguments = $true)]
-    [string[]]$AutoArguments
+    [string[]]$TaskArguments
 )
 
 $ErrorActionPreference = 'Stop'
@@ -63,7 +67,12 @@ function Stop-ChildService([System.Diagnostics.Process]$Process, [string]$Name) 
 
 try {
     New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
-    Write-Stage '启动' "HiFlow 一键任务开始，使用简历：$ResumeId"
+    if ($Mode -eq 'verify') {
+        Write-Stage '启动' 'HiFlow 只读稳定性验证开始；默认检查 50 个唯一岗位。'
+    }
+    else {
+        Write-Stage '启动' "HiFlow 真实沟通任务开始，使用简历：$ResumeId"
+    }
     Write-Stage '日志' "业务进度显示在当前终端；底层排障日志目录：$LogDir"
 
     if (-not (Test-Path -LiteralPath $Python)) {
@@ -73,19 +82,21 @@ try {
         throw "未找到 Appium：$Appium。请先运行 .\mobile_automation\setup.ps1。"
     }
 
-    if (Test-Service 'http://127.0.0.1:8787/health') {
-        Write-Stage '复用' '本地岗位匹配服务已经运行。'
-    }
-    else {
-        Write-Stage '启动' '正在启动本地岗位匹配服务……'
-        $env:PYTHONUNBUFFERED = '1'
-        $MatcherProcess = Start-Process `
-            -FilePath $Python `
-            -ArgumentList @('-u', (Join-Path $RepoRoot 'local_service\server.py')) `
-            -WorkingDirectory $RepoRoot `
-            -PassThru `
-            -WindowStyle Hidden
-        Wait-Service '本地岗位匹配服务' 'http://127.0.0.1:8787/health' $MatcherProcess $LogDir
+    if ($Mode -eq 'auto') {
+        if (Test-Service 'http://127.0.0.1:8787/health') {
+            Write-Stage '复用' '本地岗位匹配服务已经运行。'
+        }
+        else {
+            Write-Stage '启动' '正在启动本地岗位匹配服务……'
+            $env:PYTHONUNBUFFERED = '1'
+            $MatcherProcess = Start-Process `
+                -FilePath $Python `
+                -ArgumentList @('-u', (Join-Path $RepoRoot 'local_service\server.py')) `
+                -WorkingDirectory $RepoRoot `
+                -PassThru `
+                -WindowStyle Hidden
+            Wait-Service '本地岗位匹配服务' 'http://127.0.0.1:8787/health' $MatcherProcess $LogDir
+        }
     }
 
     if (Test-Service 'http://127.0.0.1:4723/status') {
@@ -118,12 +129,23 @@ try {
 
     Write-Stage '检查' '依赖服务已就绪；请保持手机解锁，并停留在目标城市的岗位列表页。'
     if ($CheckOnly) {
-        Write-Stage '完成' '启动检查通过；未读取岗位，也未执行打招呼。'
+        Write-Stage '完成' "$Mode 模式启动检查通过；未读取岗位，也未执行打招呼。"
         $ExitCode = 0
         return
     }
-    Write-Stage '执行' '开始逐个识别岗位并按规则决定是否打招呼。'
-    & $RunScript auto --resume-id $ResumeId @AutoArguments
+    if ($Mode -eq 'verify') {
+        Write-Stage '执行' '开始只读检查岗位；不启动匹配服务，不调用模型，不点击沟通按钮。'
+        & $RunScript $Mode @TaskArguments
+    }
+    else {
+        Write-Stage '执行' '验证门禁通过后，将按本地固定规则逐岗位决定是否打招呼。'
+        if ($TaskArguments -contains '--resume-id') {
+            & $RunScript $Mode @TaskArguments
+        }
+        else {
+            & $RunScript $Mode --resume-id $ResumeId @TaskArguments
+        }
+    }
     $ExitCode = $LASTEXITCODE
 }
 catch {

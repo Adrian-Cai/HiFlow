@@ -2,7 +2,7 @@
   "version": 1,
   "appPackage": "com.hpbr.bosszhipin",
   "appActivity": ".module.launcher.WelcomeActivity",
-  "maxScrolls": 5,
+  "maxScrolls": 30,
   "jobCardLocators": [
     {
       "by": "id",
@@ -12,6 +12,7 @@
   "elementIds": {
     "jobTab": "com.hpbr.bosszhipin:id/tv_tab_1",
     "jobList": "com.hpbr.bosszhipin:id/rv_list",
+    "filterLabel": "com.hpbr.bosszhipin:id/tv_tab_label",
     "jobCard": "com.hpbr.bosszhipin:id/boss_job_card_view",
     "cardTitle": "com.hpbr.bosszhipin:id/tv_position_name",
     "cardCompany": "com.hpbr.bosszhipin:id/tv_company_name",

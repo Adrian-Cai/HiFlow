@@ -19,11 +19,13 @@ _YUAN_MONTH_RANGE = re.compile(
 _EXCLUDED_DOMAIN_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
-        r"硬件测试|智能硬件|嵌入式|固件|单片机|示波器|烧录|射频|芯片测试",
-        r"\bMCU\b|\bPCB\b|\bFPGA\b|\bEMC\b|\bRTOS\b",
-        r"物联网|\bIoT\b|Zigbee|LoRa|智能家居",
-        r"车载测试|车联网|汽车电子|智能座舱|自动驾驶|\bADAS\b|\bAUTOSAR\b",
-        r"\bECU\b|T-?Box|\bUDS\b|\bHIL\b|\bSIL\b|SOME/IP",
+        r"硬件测试|硬件加速|智能硬件|嵌入式|固件|单片机|示波器|烧录|射频|芯片测试",
+        r"(?<![A-Za-z0-9])(?:MCU|PCB|FPGA|EMC|RTOS|BMC|BIOS)(?![A-Za-z0-9])",
+        r"物联网|(?<![A-Za-z0-9])IoT(?![A-Za-z0-9])|Zigbee|LoRa|智能家居",
+        r"车载测试|车载软件|车载底层|车载.*测试|车联网|汽车电子|智能座舱|自动驾驶|"
+        r"(?<![A-Za-z0-9])(?:ADAS|AUTOSAR)(?![A-Za-z0-9])",
+        r"(?<![A-Za-z0-9])(?:ECU|UDS|HIL|SIL)(?![A-Za-z0-9])|"
+        r"T-?Box|(?<![A-Za-z0-9])SOME/IP(?![A-Za-z0-9])",
         r"工控测试|工业控制|产线测试|仪器仪表测试",
     )
 )
